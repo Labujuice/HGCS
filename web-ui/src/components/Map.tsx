@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -66,6 +66,9 @@ export const FlightMap: React.FC<MapProps> = ({
   const onMapGuidedActionRef = useRef(onMapGuidedAction);
   onMapGuidedActionRef.current = onMapGuidedAction;
 
+  const [isFollowing, setIsFollowing] = useState(true);
+  const lastCenterTimeRef = useRef<number>(0);
+
   // 1. Initialize map
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
@@ -85,6 +88,17 @@ export const FlightMap: React.FC<MapProps> = ({
 
     // Re-add Zoom control at custom position (bottom-right) to keep UI clean
     L.control.zoom({ position: "bottomright" }).addTo(map);
+
+    // Disable auto-following if the user manually pans the map
+    map.on("dragstart", () => {
+      setIsFollowing(false);
+    });
+
+    // Window resize event handler to invalidate Leaflet map size and scale properly
+    const handleResize = () => {
+      map.invalidateSize();
+    };
+    window.addEventListener("resize", handleResize);
 
     map.on("click", (e) => {
       if (isFlyViewRef.current) {
@@ -147,12 +161,24 @@ export const FlightMap: React.FC<MapProps> = ({
     mapRef.current = map;
 
     return () => {
+      window.removeEventListener("resize", handleResize);
       if (mapRef.current) {
         mapRef.current.remove();
         mapRef.current = null;
       }
     };
   }, []);
+
+  // 1.1 Invalidate map size when tab changes to refresh tiles and display full-screen correctly
+  useEffect(() => {
+    if (mapRef.current) {
+      setTimeout(() => {
+        if (mapRef.current) {
+          mapRef.current.invalidateSize();
+        }
+      }, 100);
+    }
+  }, [isFlyView]);
 
   // 2. Render Drone Markers (Support Multiple Vehicles)
   useEffect(() => {
@@ -318,6 +344,39 @@ export const FlightMap: React.FC<MapProps> = ({
     }
   }, [waypoints, selectedWpIndex]);
 
+  // 4. Center map when active vehicle ID changes
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || activeVehicleId === null) return;
+    
+    const activeDrone = vehicles[activeVehicleId];
+    if (activeDrone) {
+      map.setView([activeDrone.latitude, activeDrone.longitude], map.getZoom(), {
+        animate: true,
+        duration: 1.0
+      });
+    }
+  }, [activeVehicleId]);
+
+  // 5. Throttled auto-centering to follow active vehicle during flight
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || activeVehicleId === null || !isFollowing) return;
+
+    const activeDrone = vehicles[activeVehicleId];
+    if (!activeDrone) return;
+
+    const now = Date.now();
+    // Throttle centering panTo commands to every 1500ms
+    if (now - lastCenterTimeRef.current > 1500) {
+      map.panTo([activeDrone.latitude, activeDrone.longitude], {
+        animate: true,
+        duration: 1.0
+      });
+      lastCenterTimeRef.current = now;
+    }
+  }, [vehicles, activeVehicleId, isFollowing]);
+
   // Center/Pan view to active drone
   const locateActiveDrone = () => {
     const map = mapRef.current;
@@ -329,6 +388,8 @@ export const FlightMap: React.FC<MapProps> = ({
         animate: true,
         duration: 1.0
       });
+      // Re-enable following since they manually clicked to locate the drone
+      setIsFollowing(true);
     }
   };
 
@@ -359,12 +420,34 @@ export const FlightMap: React.FC<MapProps> = ({
       {/* Floating Map Panel Controls (QGC Style) */}
       <div className="absolute top-24 left-4 z-400 flex flex-col gap-2.5">
         <button
+          onClick={() => {
+            setIsFollowing((prev) => {
+              const next = !prev;
+              if (next && activeVehicleId !== null && mapRef.current) {
+                const activeDrone = vehicles[activeVehicleId];
+                if (activeDrone) {
+                  mapRef.current.setView([activeDrone.latitude, activeDrone.longitude], mapRef.current.getZoom(), {
+                    animate: true,
+                    duration: 1.0
+                  });
+                }
+              }
+              return next;
+            });
+          }}
+          disabled={activeVehicleId === null}
+          className={`btn-map-control ${isFollowing ? "btn-following-active" : ""}`}
+          title={isFollowing ? "Lock Map Center to Drone" : "Unlock Map Center"}
+        >
+          {isFollowing ? "🔒 Auto-Center" : "🔓 Manual Pan"}
+        </button>
+        <button
           onClick={locateActiveDrone}
           disabled={activeVehicleId === null}
           className="btn-map-control"
           title="Locate Active Drone"
         >
-          🎯 Locate Drone
+          🎯 Center Active
         </button>
         <button
           onClick={fitFlightBounds}

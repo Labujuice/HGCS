@@ -164,6 +164,7 @@ function App() {
     };
     setVehicles(initVehicles);
     setActiveVehicleId(1);
+    setViewMode("fly"); // Auto-switch to Fly tab when starting simulator
 
     if (simTimerRef.current) clearInterval(simTimerRef.current);
     let tick = 0;
@@ -451,8 +452,14 @@ function App() {
               }
             }));
             
-            // Auto-select first discovered vehicle
-            setActiveVehicleId(prev => (prev === null ? vId : prev));
+            // Auto-select first discovered vehicle and switch to fly mode
+            setActiveVehicleId(prev => {
+              if (prev === null) {
+                setViewMode("fly");
+                return vId;
+              }
+              return prev;
+            });
             
           } else if (payload.type === "mission_status") {
             const vId = payload.vehicle_id || 1;
