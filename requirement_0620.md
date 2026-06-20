@@ -134,7 +134,7 @@ v
 
 工程團隊必須依照以下階段進行開發與交付：
 
-### Phase 1: 架架構驗證與 Mock 開發 (TODO)
+### Phase 1: 架構驗證與 Mock 開發 (TODO)
 
 * [x] **【前端】** 建立 HGCS Web UI 基礎專案（React/Vue3 + Vite + TypeScript）。
 * [x] **【前端】** 實作 Mock Server，模擬 20Hz 的 Telemetry JSON 訊號，完成前端姿態儀與地圖組件的流暢度測試（確保 60fps）。
