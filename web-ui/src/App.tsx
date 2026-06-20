@@ -58,8 +58,14 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [isSimulating, setIsSimulating] = useState(false);
   
+  // View mode tab state: "fly" | "plan" | "setup"
+  const [viewMode, setViewMode] = useState<"fly" | "plan" | "setup">("fly");
+  
+  // Slide to confirm actions state
+  const [sliderAction, setSliderAction] = useState<{ type: string; label: string; data?: any } | null>(null);
+  const [sliderValue, setSliderValue] = useState(0);
+  
   // Connection Settings dropdown state
-  const [showSettings, setShowSettings] = useState(false);
   const [gatewayLinks, setGatewayLinks] = useState<string[]>([]);
   
   // Form state for adding downstream connection
@@ -131,6 +137,11 @@ function App() {
       batteryVolts: number;
       targetWpIndex: number;
       flying: boolean;
+      targetLat?: number;
+      targetLon?: number;
+      targetAlt?: number;
+      orbitRadius?: number;
+      orbitAngle?: number;
     };
   }>({
     1: { lat: 24.7746, lon: 121.0446, alt: 0.0, yaw: 90.0, armed: false, mode: "HOLD", batteryVolts: 25.2, targetWpIndex: 0, flying: false },
@@ -145,7 +156,6 @@ function App() {
     }
     
     setIsSimulating(true);
-    setShowSettings(false);
     
     // Auto-setup simulated vehicle structures
     const initVehicles = {
@@ -172,7 +182,125 @@ function App() {
         let pitch = 0.0;
         let roll = 0.0;
 
-        if (state.flying && activeWps.length > 0 && state.targetWpIndex < activeWps.length) {
+        if (state.flying && state.mode === "TAKEOFF") {
+          const targetAlt = state.targetAlt || 10.0;
+          const dAlt = targetAlt - state.alt;
+          if (dAlt > 0.1) {
+            state.alt += 0.3;
+            pitch = 7.0;
+            groundspeed = 1.0;
+          } else {
+            pitch = 0.0;
+            state.mode = "HOLD";
+          }
+        } else if (state.flying && state.mode === "LAND") {
+          if (state.alt > 0.1) {
+            state.alt -= 0.2;
+            pitch = -7.5;
+            groundspeed = 0.5;
+          } else {
+            state.alt = 0.0;
+            state.flying = false;
+            state.armed = false;
+            state.mode = "HOLD";
+            pitch = 0.0;
+          }
+        } else if (state.flying && state.mode === "RTL") {
+          const homeLat = vid === 1 ? 24.7746 : 24.7760;
+          const homeLon = vid === 1 ? 121.0446 : 121.0465;
+          const dy = homeLat - state.lat;
+          const dx = homeLon - state.lon;
+          const dist = Math.sqrt(dx*dx + dy*dy);
+          if (dist > 0.00005) {
+            groundspeed = vid === 1 ? 11.5 : 9.5;
+            airspeed = groundspeed;
+            const step = 0.00001;
+            state.lat += (dy / dist) * step;
+            state.lon += (dx / dist) * step;
+            state.yaw = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+            
+            const dAlt = 15.0 - state.alt;
+            if (Math.abs(dAlt) > 0.5) {
+              state.alt += Math.sign(dAlt) * 0.2;
+              pitch = dAlt > 0 ? 5.5 : -5.5;
+            } else {
+              pitch = 0.0;
+            }
+            roll = 2.0 * Math.sin(tick * 0.1 + vid);
+          } else {
+            state.mode = "LAND";
+          }
+        } else if (state.flying && state.mode === "GO_TO") {
+          const targetLat = state.targetLat || state.lat;
+          const targetLon = state.targetLon || state.lon;
+          const targetAlt = state.targetAlt || 10.0;
+          const dy = targetLat - state.lat;
+          const dx = targetLon - state.lon;
+          const dist = Math.sqrt(dx*dx + dy*dy);
+          if (dist > 0.00005) {
+            groundspeed = vid === 1 ? 11.5 : 9.5;
+            airspeed = groundspeed;
+            const step = 0.00001;
+            state.lat += (dy / dist) * step;
+            state.lon += (dx / dist) * step;
+            state.yaw = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+            
+            const dAlt = targetAlt - state.alt;
+            if (Math.abs(dAlt) > 0.5) {
+              state.alt += Math.sign(dAlt) * 0.2;
+              pitch = dAlt > 0 ? 5.5 : -5.5;
+            } else {
+              pitch = 0.0;
+            }
+            roll = 2.0 * Math.sin(tick * 0.1 + vid);
+          } else {
+            state.mode = "HOLD";
+            groundspeed = 0.0;
+            pitch = 0.0;
+          }
+        } else if (state.flying && state.mode === "ORBIT") {
+          const centerLat = state.targetLat || state.lat;
+          const centerLon = state.targetLon || state.lon;
+          const targetAlt = state.targetAlt || 10.0;
+          const radius = state.orbitRadius || 20.0;
+          let angle = state.orbitAngle || 0.0;
+
+          const r_lat_deg = radius * 0.000009;
+          const r_lon_deg = radius * 0.000010;
+          const targetLatOnEdge = centerLat + r_lat_deg * Math.cos(angle);
+          const targetLonOnEdge = centerLon + r_lon_deg * Math.sin(angle);
+
+          const dy = targetLatOnEdge - state.lat;
+          const dx = targetLonOnEdge - state.lon;
+          const dist = Math.sqrt(dx*dx + dy*dy);
+
+          if (dist > 0.00005) {
+            groundspeed = vid === 1 ? 11.5 : 9.5;
+            airspeed = groundspeed;
+            const step = 0.00001;
+            state.lat += (dy / dist) * step;
+            state.lon += (dx / dist) * step;
+            state.yaw = (Math.atan2(dx, dy) * 180 / Math.PI + 360) % 360;
+            roll = 2.0 * Math.sin(tick * 0.1 + vid);
+          } else {
+            groundspeed = 5.0;
+            airspeed = groundspeed;
+            angle += 0.05;
+            state.orbitAngle = angle;
+            state.lat = centerLat + r_lat_deg * Math.cos(angle);
+            state.lon = centerLon + r_lon_deg * Math.sin(angle);
+            state.yaw = (angle * 180 / Math.PI + 90) % 360;
+            roll = 8.0;
+          }
+
+          const dAlt = targetAlt - state.alt;
+          if (Math.abs(dAlt) > 0.5) {
+            state.alt += Math.sign(dAlt) * 0.2;
+            pitch = dAlt > 0 ? 5.5 : -5.5;
+          } else {
+            pitch = 0.0;
+          }
+        } else if (state.flying && state.mode === "MISSION" && activeWps.length > 0 && state.targetWpIndex < activeWps.length) {
           const wp = activeWps[state.targetWpIndex];
           let targetLat = wp.latitude;
           let targetLon = wp.longitude;
@@ -363,43 +491,59 @@ function App() {
     }
   };
 
-  // --- 3. COMMAND TRANSMITTERS ---
-  const sendArmCommand = (arm: boolean) => {
-    if (activeVehicleId === null) return;
-
-    if (isSimulating) {
-      const state = simControlsRef.current[activeVehicleId];
-      if (state) {
-        state.armed = arm;
-        if (!arm) {
-          state.flying = false;
-          state.alt = 0.0;
-        }
-      }
-      return;
-    }
-
-    if (!isConnected || !wsRef.current) {
-      alert("Gateway not connected!");
-      return;
-    }
-
-    wsRef.current.send(JSON.stringify({
-      action: "arm",
-      data: { vehicle_id: activeVehicleId, armed: arm }
-    }));
+  // --- 3. COMMAND TRANSMITTERS WITH SLIDE TO CONFIRM ---
+  const initiateSliderAction = (type: string, label: string, data?: any) => {
+    setSliderAction({ type, label, data });
+    setSliderValue(0);
   };
 
-  const sendModeCommand = (mode: "HOLD" | "MISSION" | "RTL") => {
+  const executeSliderAction = (action: { type: string; label: string; data?: any }) => {
     if (activeVehicleId === null) return;
+    const vId = activeVehicleId;
+    const { type, data } = action;
 
     if (isSimulating) {
-      const state = simControlsRef.current[activeVehicleId];
+      const state = simControlsRef.current[vId];
       if (state) {
-        state.mode = mode;
-        if (mode === "MISSION" && state.armed) {
+        if (type === "arm") {
+          state.armed = data.armed;
+          if (!data.armed) {
+            state.flying = false;
+            state.alt = 0.0;
+          }
+        } else if (type === "takeoff") {
+          state.armed = true;
           state.flying = true;
-          state.targetWpIndex = 0;
+          state.mode = "TAKEOFF";
+          state.targetAlt = 10.0;
+        } else if (type === "land") {
+          state.mode = "LAND";
+        } else if (type === "rtl") {
+          state.mode = "RTL";
+          state.flying = true;
+        } else if (type === "pause") {
+          state.mode = "HOLD";
+          state.flying = false;
+        } else if (type === "go_to") {
+          state.mode = "GO_TO";
+          state.flying = true;
+          state.targetLat = data.latitude;
+          state.targetLon = data.longitude;
+          state.targetAlt = state.alt > 1.0 ? state.alt : 10.0;
+        } else if (type === "orbit") {
+          state.mode = "ORBIT";
+          state.flying = true;
+          state.targetLat = data.latitude;
+          state.targetLon = data.longitude;
+          state.targetAlt = state.alt > 1.0 ? state.alt : 10.0;
+          state.orbitRadius = 20.0;
+          state.orbitAngle = 0.0;
+        } else if (type === "set_mode") {
+          state.mode = data.mode;
+          if (data.mode === "MISSION" && state.armed) {
+            state.flying = true;
+            state.targetWpIndex = 0;
+          }
         }
       }
       return;
@@ -410,10 +554,47 @@ function App() {
       return;
     }
 
-    wsRef.current.send(JSON.stringify({
-      action: "set_mode",
-      data: { vehicle_id: activeVehicleId, mode }
-    }));
+    if (type === "arm") {
+      wsRef.current.send(JSON.stringify({
+        action: "arm",
+        data: { vehicle_id: vId, armed: data.armed }
+      }));
+    } else if (type === "takeoff") {
+      wsRef.current.send(JSON.stringify({
+        action: "takeoff",
+        data: { vehicle_id: vId, altitude: 10.0 }
+      }));
+    } else if (type === "land") {
+      wsRef.current.send(JSON.stringify({
+        action: "land",
+        data: { vehicle_id: vId }
+      }));
+    } else if (type === "rtl") {
+      wsRef.current.send(JSON.stringify({
+        action: "rtl",
+        data: { vehicle_id: vId }
+      }));
+    } else if (type === "pause") {
+      wsRef.current.send(JSON.stringify({
+        action: "pause",
+        data: { vehicle_id: vId }
+      }));
+    } else if (type === "go_to") {
+      wsRef.current.send(JSON.stringify({
+        action: "go_to",
+        data: { vehicle_id: vId, latitude: data.latitude, longitude: data.longitude, altitude: telemetry.navigation.relative_altitude > 1.0 ? telemetry.navigation.relative_altitude : 10.0 }
+      }));
+    } else if (type === "orbit") {
+      wsRef.current.send(JSON.stringify({
+        action: "orbit",
+        data: { vehicle_id: vId, latitude: data.latitude, longitude: data.longitude, altitude: telemetry.navigation.relative_altitude > 1.0 ? telemetry.navigation.relative_altitude : 10.0, radius: 20.0 }
+      }));
+    } else if (type === "set_mode") {
+      wsRef.current.send(JSON.stringify({
+        action: "set_mode",
+        data: { vehicle_id: vId, mode: data.mode }
+      }));
+    }
   };
 
   const sendMissionUpload = () => {
@@ -608,6 +789,10 @@ function App() {
         selectedWpIndex={selectedWpIndex}
         onWaypointsChange={handleWaypointsChange}
         onSelectWp={handleSelectWp}
+        isFlyView={viewMode === "fly"}
+        onMapGuidedAction={(action, lat, lng) => 
+          initiateSliderAction(action, action === "go_to" ? "Guided Reposition (Go To)" : "Guided Orbit Center", { latitude: lat, longitude: lng })
+        }
       />
 
       {/* 2. Floating Glassmorphic Overlay UI Elements */}
@@ -615,6 +800,7 @@ function App() {
         
         {/* Floating Header */}
         <header className="header-overlay">
+          {/* Logo & Branding */}
           <div className="flex items-center gap-3">
             <div className="bg-sky-500-10 border border-sky-500-30 p-1-5 rounded-lg text-sky-400">
               <Cpu className="w-6 h-6 animate-pulse" />
@@ -625,13 +811,44 @@ function App() {
             </div>
           </div>
 
+          {/* View Toggles (FLY, PLAN, SETUP) */}
+          <div className="view-toggles">
+            <button
+              onClick={() => {
+                setViewMode("fly");
+                setSelectedWpIndex(null);
+              }}
+              className={`view-toggle-btn ${viewMode === "fly" ? "active" : ""}`}
+            >
+              Fly
+            </button>
+            <button
+              onClick={() => {
+                setViewMode("plan");
+                setSelectedWpIndex(null);
+              }}
+              className={`view-toggle-btn ${viewMode === "plan" ? "active" : ""}`}
+            >
+              Plan
+            </button>
+            <button
+              onClick={() => {
+                setViewMode("setup");
+                setSelectedWpIndex(null);
+              }}
+              className={`view-toggle-btn ${viewMode === "setup" ? "active" : ""}`}
+            >
+              Setup
+            </button>
+          </div>
+
           {/* Active vehicle switcher and Settings deck */}
           <div className="flex items-center gap-4">
             
             {/* Vehicle Switcher dropdown */}
             {vehicleList.length > 0 && (
-              <div className="flex items-center gap-2 bg-gray-950/70 px-3 py-1-5 rounded border border-gray-800">
-                <span className="text-xxs font-mono text-gray-500">SELECTED VEHICLE:</span>
+              <div className="flex items-center gap-2 bg-gray-950/70 px-3 py-1 rounded border border-gray-800">
+                <span className="text-[9px] font-mono text-gray-500">VEHICLE:</span>
                 <select
                   value={activeVehicleId || ""}
                   onChange={(e) => {
@@ -639,28 +856,63 @@ function App() {
                     setActiveVehicleId(val);
                     setSelectedWpIndex(null);
                   }}
-                  className="bg-gray-900 border border-gray-700 text-xs px-2.5 py-1 rounded text-emerald-400 font-mono font-bold focus:outline-none"
+                  className="bg-gray-900 border border-gray-700 text-xs px-2 py-0.5 rounded text-emerald-400 font-mono font-bold focus:outline-none"
                 >
                   {vehicleList.map((id) => (
                     <option key={id} value={id}>
-                      Vehicle #{id} {id === activeVehicleId ? "(Active)" : ""}
+                      #{id}
                     </option>
                   ))}
                 </select>
               </div>
             )}
 
+            {/* QGC Status Badges */}
+            {activeVehicleId !== null && (
+              <div className="header-badges-deck">
+                {/* Armed state badge */}
+                <div className="header-badge">
+                  <span className="header-badge-label">Motor:</span>
+                  <span className={`header-badge-val ${telemetry.status.armed ? "text-emerald-400" : "text-rose-500"}`}>
+                    {telemetry.status.armed ? "ARMED" : "DISARMED"}
+                  </span>
+                </div>
+
+                {/* Mode badge */}
+                <div className="header-badge">
+                  <span className="header-badge-label">Mode:</span>
+                  <span className="header-badge-val text-sky-400">
+                    {telemetry.status.mode}
+                  </span>
+                </div>
+
+                {/* Battery badge */}
+                <div className="header-badge">
+                  <Battery className="w-3.5 h-3.5 text-yellow-500" />
+                  <span className="header-badge-val">{telemetry.status.battery_percent}%</span>
+                  <span className="text-[9px] text-gray-500 ml-1">({telemetry.status.battery_voltage.toFixed(1)}V)</span>
+                </div>
+
+                {/* GPS badge */}
+                <div className="header-badge">
+                  <Compass className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="header-badge-val">{telemetry.status.gps_satellites} Sats</span>
+                  <span className="text-[9px] text-gray-500 ml-1">(Fix {telemetry.status.gps_fix_type})</span>
+                </div>
+              </div>
+            )}
+
             {/* Quick Status indicators */}
             <div className="flex items-center gap-3">
               <span className={`status-badge ${isConnected ? "status-armed" : isSimulating ? "bg-purple-900-60 text-purple-200" : "status-disarmed"}`}>
-                {isConnected ? "GATEWAY LINK" : isSimulating ? "SIMULATOR ACTIVE" : "DISCONNECTED"}
+                {isConnected ? "GATEWAY LINK" : isSimulating ? "SIMULATOR" : "DISCONNECTED"}
               </span>
             </div>
 
             {/* Setup Connections Menu Trigger */}
             <button
-              onClick={() => setShowSettings(!showSettings)}
-              className="btn btn-secondary flex items-center gap-1.5"
+              onClick={() => setViewMode("setup")}
+              className={`btn btn-secondary flex items-center gap-1.5 ${viewMode === "setup" ? "text-sky-400 border-sky-500 bg-sky-500-10" : ""}`}
               id="btn-settings-toggle"
             >
               <Settings className="w-4 h-4" /> Link Setup
@@ -668,491 +920,571 @@ function App() {
           </div>
         </header>
 
-        {/* Dynamic Downstream Connection Setup Card (QGC-style popup menu) */}
-        {showSettings && (
-          <div className="dropdown-menu-card" id="connection-settings-menu">
-            <h3 className="text-xs uppercase font-mono tracking-wider text-gray-300 border-b border-gray-800 pb-2 mb-2 flex justify-between items-center">
-              ⚙️ Link Configuration Deck
-              <button 
-                onClick={() => setShowSettings(false)} 
-                className="text-gray-500 hover:text-white font-bold"
-              >
-                ✕
-              </button>
-            </h3>
-
-            {/* Step A: WebSocket Link to Gateway */}
-            <div className="flex flex-col gap-2 bg-gray-900 p-2-5 rounded border border-gray-800">
-              <span className="text-xxs font-mono text-gray-400 font-bold">1. PROXY WEBSOCKET:</span>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={wsUrl}
-                  onChange={(e) => setWsUrl(e.target.value)}
-                  disabled={isConnected}
-                  className="form-input flex-1"
-                />
-                {!isConnected ? (
-                  <button
-                    onClick={connectToGateway}
-                    disabled={isSimulating}
-                    className="btn btn-primary text-xs"
-                  >
-                    Connect
-                  </button>
-                ) : (
-                  <button
-                    onClick={disconnectFromGateway}
-                    className="btn btn-danger text-xs"
-                  >
-                    Disconnect
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* Step B: Sim controls shortcut */}
-            <div className="flex flex-col gap-2 bg-gray-900 p-2-5 rounded border border-gray-800">
-              <span className="text-xxs font-mono text-gray-400 font-bold">2. MULTI-VEHICLE SIMULATOR:</span>
-              {!isSimulating ? (
+        {/* ================================================================= */}
+        {/* 2.1 FLY VIEW LAYOUT                                              */}
+        {/* ================================================================= */}
+        {viewMode === "fly" && (
+          <>
+            {/* Left QGC-style Guided Fly Tools sidebar */}
+            {activeVehicleId !== null && (
+              <div className="fly-tools-panel">
+                {/* Arm / Disarm Tool */}
                 <button
-                  onClick={startLocalSimulator}
-                  disabled={isConnected}
-                  className="btn btn-success w-full text-xs"
+                  onClick={() => initiateSliderAction("arm", telemetry.status.armed ? "Disarm Propulsion Motors" : "Arm Propulsion Motors", { armed: !telemetry.status.armed })}
+                  className={`fly-tool-btn ${telemetry.status.armed ? "danger" : ""}`}
+                  title="Arm/Disarm Motors"
                 >
-                  Launch Local Sim
+                  <Play className={`w-5 h-5 ${telemetry.status.armed ? "rotate-90 text-rose-500" : "text-emerald-400"}`} />
+                  <span className="fly-tool-btn-label">{telemetry.status.armed ? "Disarm" : "Arm"}</span>
                 </button>
-              ) : (
+
+                {/* Guided Takeoff Tool */}
                 <button
-                  onClick={stopLocalSimulator}
-                  className="btn btn-warning w-full text-xs"
+                  onClick={() => initiateSliderAction("takeoff", "Drone Takeoff", {})}
+                  disabled={telemetry.navigation.relative_altitude > 1.0}
+                  className="fly-tool-btn"
+                  title="Take Off"
                 >
-                  Kill Simulator
+                  <Upload className="w-5 h-5 text-sky-400" />
+                  <span className="fly-tool-btn-label">Takeoff</span>
                 </button>
-              )}
-            </div>
 
-            {/* Step C: Setup MAVLink Downstream Connections (TCP/UDP/Serial) */}
-            <div className="flex flex-col gap-2.5 bg-gray-900 p-2-5 rounded border border-gray-800">
-              <span className="text-xxs font-mono text-gray-400 font-bold">3. SPAWN MAVLINK BRIDGE (DOWNSTREAM):</span>
-              
-              <div className="form-group">
-                <label className="form-label">Protocol Type</label>
-                <select
-                  value={newLinkType}
-                  onChange={(e) => setNewLinkType(e.target.value as any)}
-                  className="form-select"
+                {/* Guided Land Tool */}
+                <button
+                  onClick={() => initiateSliderAction("land", "Drone Land", {})}
+                  disabled={telemetry.navigation.relative_altitude <= 1.0}
+                  className="fly-tool-btn"
+                  title="Land at current location"
                 >
-                  <option value="udp">UDP Port Listener (QGC SIH)</option>
-                  <option value="tcp">TCP Network Client</option>
-                  <option value="serial">Serial Telemetry Radio (COM)</option>
-                </select>
-              </div>
+                  <Square className="w-5 h-5 text-rose-400" />
+                  <span className="fly-tool-btn-label">Land</span>
+                </button>
 
-              {/* Contextual form inputs */}
-              {newLinkType === "udp" && (
-                <div className="form-group">
-                  <label className="form-label">Listening UDP Port</label>
-                  <input
-                    type="number"
-                    value={udpPort}
-                    onChange={(e) => setUdpPort(Number(e.target.value))}
-                    className="form-input"
-                  />
-                </div>
-              )}
+                {/* Guided RTL Tool */}
+                <button
+                  onClick={() => initiateSliderAction("rtl", "Return to Launch", {})}
+                  disabled={telemetry.navigation.relative_altitude <= 1.0}
+                  className="fly-tool-btn"
+                  title="Safety return to Home coordinates"
+                >
+                  <RefreshCw className="w-5 h-5 text-yellow-500" />
+                  <span className="fly-tool-btn-label">RTL</span>
+                </button>
 
-              {newLinkType === "tcp" && (
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="form-group">
-                    <label className="form-label">Host IP Address</label>
-                    <input
-                      type="text"
-                      value={tcpHost}
-                      onChange={(e) => setTcpHost(e.target.value)}
-                      className="form-input"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Port</label>
-                    <input
-                      type="number"
-                      value={tcpPort}
-                      onChange={(e) => setTcpPort(Number(e.target.value))}
-                      className="form-input"
-                    />
-                  </div>
-                </div>
-              )}
-
-              {newLinkType === "serial" && (
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="form-group">
-                    <label className="form-label">Port Path</label>
-                    <input
-                      type="text"
-                      value={serialPort}
-                      onChange={(e) => setSerialPort(e.target.value)}
-                      className="form-input"
-                    />
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Baud Rate</label>
-                    <select
-                      value={serialBaud}
-                      onChange={(e) => setSerialBaud(Number(e.target.value))}
-                      className="form-select font-mono"
-                    >
-                      <option value={9600}>9600 bps</option>
-                      <option value={57600}>57600 bps (Radio)</option>
-                      <option value={115200}>115200 bps (Pixhawk)</option>
-                      <option value={921600}>921600 bps (Companion)</option>
-                    </select>
-                  </div>
-                </div>
-              )}
-
-              <button
-                onClick={addDownstreamLink}
-                disabled={!isConnected}
-                className="btn btn-primary w-full text-xs flex items-center justify-center gap-1 mt-1"
-              >
-                <Plus className="w-4 h-4" /> Add Bridge Connection
-              </button>
-            </div>
-
-            {/* Active downstream links */}
-            {gatewayLinks.length > 0 && (
-              <div className="flex flex-col gap-1.5 font-mono text-xxs text-gray-400">
-                <span className="text-[9px] uppercase text-gray-500 font-bold">Active Gateway Links:</span>
-                {gatewayLinks.map((link, idx) => (
-                  <div key={idx} className="bg-black/40 px-2 py-1 rounded border border-gray-800">
-                    🟢 {link}
-                  </div>
-                ))}
+                {/* Guided Pause Tool */}
+                <button
+                  onClick={() => initiateSliderAction("pause", "Hold Hovering", {})}
+                  disabled={telemetry.navigation.relative_altitude <= 1.0}
+                  className="fly-tool-btn"
+                  title="Pause flight and hover"
+                >
+                  <Square className="w-5 h-5 text-purple-400" />
+                  <span className="fly-tool-btn-label">Pause</span>
+                </button>
               </div>
             )}
-          </div>
+
+            {/* Left PFD Display overlay */}
+            {activeVehicleId !== null && (
+              <aside className="sidebar-left" style={{ top: "450px" }}>
+                <PFD
+                  roll={telemetry.pose.roll}
+                  pitch={telemetry.pose.pitch}
+                  heading={telemetry.pose.heading}
+                  altitude={telemetry.navigation.relative_altitude}
+                  airspeed={telemetry.navigation.airspeed}
+                  groundspeed={telemetry.navigation.groundspeed}
+                />
+              </aside>
+            )}
+
+            {/* Right Telemetry metrics and parameters */}
+            {activeVehicleId !== null && (
+              <aside className="sidebar-right">
+                {/* Quick HUD Metrics */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="hud-metric-card">
+                    <Battery className="w-6 h-6 text-yellow-500" />
+                    <div>
+                      <div className="hud-metric-title">Power</div>
+                      <div className="hud-metric-value">{telemetry.status.battery_percent}%</div>
+                      <div className="hud-metric-sub">{telemetry.status.battery_voltage.toFixed(1)} V</div>
+                    </div>
+                  </div>
+
+                  <div className="hud-metric-card">
+                    <Compass className="w-6 h-6 text-sky-400" />
+                    <div>
+                      <div className="hud-metric-title">Heading</div>
+                      <div className="hud-metric-value">{telemetry.pose.heading}°</div>
+                      <div className="hud-metric-sub">YAW: {telemetry.pose.yaw.toFixed(0)}°</div>
+                    </div>
+                  </div>
+
+                  <div className="hud-metric-card">
+                    <Navigation className="w-6 h-6 text-emerald-500" />
+                    <div>
+                      <div className="hud-metric-title">Altitude</div>
+                      <div className="hud-metric-value">{telemetry.navigation.relative_altitude.toFixed(1)} m</div>
+                      <div className="hud-metric-sub">Relative</div>
+                    </div>
+                  </div>
+
+                  <div className="hud-metric-card">
+                    <TrendingUp className="w-6 h-6 text-purple-400" />
+                    <div>
+                      <div className="hud-metric-title">Speed</div>
+                      <div className="hud-metric-value">{telemetry.navigation.groundspeed.toFixed(1)} m/s</div>
+                      <div className="hud-metric-sub">AIR: {telemetry.navigation.airspeed.toFixed(0)}</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Telemetry Details Panel */}
+                <div className="panel shadow">
+                  <h3 className="panel-header">
+                    🛸 Telemetry Parameters (Drone #{activeVehicleId})
+                  </h3>
+                  <div className="grid grid-cols-2 gap-y-2 text-xxs font-mono">
+                    <div className="text-gray-500">ARMED STATE:</div>
+                    <div className={telemetry.status.armed ? "text-emerald-400 font-bold" : "text-rose-500 font-bold"}>
+                      {telemetry.status.armed ? "ARMED" : "DISARMED"}
+                    </div>
+
+                    <div className="text-gray-500">FLIGHT MODE:</div>
+                    <div className="text-sky-400 font-bold">{telemetry.status.mode}</div>
+
+                    <div className="text-gray-500">GPS QUALITY:</div>
+                    <div>
+                      {telemetry.status.gps_satellites} Sats (Fix {telemetry.status.gps_fix_type})
+                    </div>
+
+                    <div className="text-gray-500">COORDINATES:</div>
+                    <div className="text-xxs text-gray-300">
+                      {telemetry.navigation.latitude.toFixed(6)}, <br />
+                      {telemetry.navigation.longitude.toFixed(6)}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Actions quick shortcuts */}
+                <div className="panel shadow">
+                  <h3 className="panel-header">
+                    ⚙️ Flight Control Shortcuts
+                  </h3>
+                  <div className="flex flex-col gap-2">
+                    <button
+                      onClick={() => initiateSliderAction("set_mode", "Switch to MISSION Flight mode", { mode: "MISSION" })}
+                      disabled={!telemetry.status.armed}
+                      className="btn btn-primary text-xs w-full py-2 disabled-opacity-40"
+                    >
+                      🚀 Start Mission Flight
+                    </button>
+                    <button
+                      onClick={() => initiateSliderAction("pause", "Hold Drone Position (Hover)", {})}
+                      className="btn btn-secondary text-xs w-full py-2"
+                    >
+                      ⏸️ Pause & Hover Here
+                    </button>
+                  </div>
+                </div>
+              </aside>
+            )}
+          </>
         )}
 
-        {/* LEFT FLOATING SIDEBAR (PFD, Stats, Command Deck) */}
-        <aside className="sidebar-left">
-          
-          {/* Canvas PFD Component */}
-          {activeVehicleId !== null && (
-            <PFD
-              roll={telemetry.pose.roll}
-              pitch={telemetry.pose.pitch}
-              heading={telemetry.pose.heading}
-              altitude={telemetry.navigation.relative_altitude}
-              airspeed={telemetry.navigation.airspeed}
-              groundspeed={telemetry.navigation.groundspeed}
-            />
-          )}
+        {/* ================================================================= */}
+        {/* 2.2 PLAN VIEW LAYOUT                                              */}
+        {/* ================================================================= */}
+        {viewMode === "plan" && (
+          <aside className="sidebar-right">
+            {/* Waypoint list editor panel */}
+            {activeVehicleId !== null && (
+              <div className="panel shadow flex-1 min-h-300">
+                <h3 className="panel-header">
+                  📋 Waypoint Editor
+                </h3>
 
-          {/* Quick HUD Metrics */}
-          {activeVehicleId !== null && (
-            <div className="grid grid-cols-2 gap-2">
-              <div className="hud-metric-card">
-                <Battery className="w-6 h-6 text-yellow-500" />
-                <div>
-                  <div className="hud-metric-title">Power</div>
-                  <div className="hud-metric-value">{telemetry.status.battery_percent}%</div>
-                  <div className="hud-metric-sub">{telemetry.status.battery_voltage.toFixed(1)} V</div>
-                </div>
-              </div>
-
-              <div className="hud-metric-card">
-                <Compass className="w-6 h-6 text-sky-400" />
-                <div>
-                  <div className="hud-metric-title">Heading</div>
-                  <div className="hud-metric-value">{telemetry.pose.heading}°</div>
-                  <div className="hud-metric-sub">YAW: {telemetry.pose.yaw.toFixed(0)}°</div>
-                </div>
-              </div>
-
-              <div className="hud-metric-card">
-                <Navigation className="w-6 h-6 text-emerald-500" />
-                <div>
-                  <div className="hud-metric-title">Altitude</div>
-                  <div className="hud-metric-value">{telemetry.navigation.relative_altitude.toFixed(1)} m</div>
-                  <div className="hud-metric-sub">Relative</div>
-                </div>
-              </div>
-
-              <div className="hud-metric-card">
-                <TrendingUp className="w-6 h-6 text-purple-400" />
-                <div>
-                  <div className="hud-metric-title">Speed</div>
-                  <div className="hud-metric-value">{telemetry.navigation.groundspeed.toFixed(1)} m/s</div>
-                  <div className="hud-metric-sub">AIR: {telemetry.navigation.airspeed.toFixed(0)}</div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Telemetry Metrics Table */}
-          {activeVehicleId !== null && (
-            <div className="panel shadow">
-              <h3 className="panel-header">
-                🛸 Telemetry Parameters (Drone #{activeVehicleId})
-              </h3>
-              <div className="grid grid-cols-2 gap-y-2 text-xxs font-mono">
-                <div className="text-gray-500">ARMED STATE:</div>
-                <div className={telemetry.status.armed ? "text-emerald-400 font-bold" : "text-rose-500 font-bold"}>
-                  {telemetry.status.armed ? "ARMED" : "DISARMED"}
-                </div>
-
-                <div className="text-gray-500">FLIGHT MODE:</div>
-                <div className="text-sky-400 font-bold">{telemetry.status.mode}</div>
-
-                <div className="text-gray-500">GPS QUALITY:</div>
-                <div>
-                  {telemetry.status.gps_satellites} Sats (Fix {telemetry.status.gps_fix_type})
-                </div>
-
-                <div className="text-gray-500">COORDINATES:</div>
-                <div className="text-xxs text-gray-300">
-                  {telemetry.navigation.latitude.toFixed(6)}, <br />
-                  {telemetry.navigation.longitude.toFixed(6)}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Command Deck controls */}
-          {activeVehicleId !== null && (
-            <div className="panel shadow">
-              <h3 className="panel-header">
-                ⚙️ Command Deck (Drone #{activeVehicleId})
-              </h3>
-              <div className="flex flex-col gap-3">
-                
-                {/* Arm/Disarm Buttons */}
-                <div className="flex justify-between items-center">
-                  <span className="text-xxs font-mono text-gray-400">PROPULSION:</span>
-                  <div className="flex gap-1.5">
-                    <button
-                      onClick={() => sendArmCommand(true)}
-                      className={`btn text-xxs ${telemetry.status.armed ? "bg-emerald-600-30 text-emerald-400 border border-emerald-500-30 cursor-default" : "btn-success"}`}
-                    >
-                      <Play className="w-3.5 h-3.5" /> Arm
-                    </button>
-                    <button
-                      onClick={() => sendArmCommand(false)}
-                      className={`btn text-xxs ${!telemetry.status.armed ? "bg-rose-600-30 text-rose-400 border border-rose-500-30 cursor-default" : "btn-danger"}`}
-                    >
-                      <Square className="w-3.5 h-3.5" /> Disarm
-                    </button>
-                  </div>
-                </div>
-
-                {/* Flight Mode Commands */}
-                <div className="flex justify-between items-center">
-                  <span className="text-xxs font-mono text-gray-400">OPERATIONS:</span>
-                  <div className="flex gap-1">
-                    <button
-                      onClick={() => sendModeCommand("HOLD")}
-                      className={`btn text-xxs btn-secondary ${telemetry.status.mode === "HOLD" ? "text-sky-400 border-sky-500 bg-sky-500-10" : ""}`}
-                    >
-                      Hold
-                    </button>
-                    <button
-                      onClick={() => sendModeCommand("MISSION")}
-                      className={`btn text-xxs btn-secondary ${telemetry.status.mode === "MISSION" ? "text-sky-400 border-sky-500 bg-sky-500-10" : ""}`}
-                    >
-                      Mission
-                    </button>
-                    <button
-                      onClick={() => sendModeCommand("RTL")}
-                      className={`btn text-xxs btn-secondary ${telemetry.status.mode === "RTL" ? "text-sky-400 border-sky-500 bg-sky-500-10" : ""}`}
-                    >
-                      RTL
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-        </aside>
-
-        {/* RIGHT FLOATING SIDEBAR (Waypoint Editor & Mission Sync) */}
-        <aside className="sidebar-right">
-          
-          {/* Waypoint list editor panel */}
-          {activeVehicleId !== null && (
-            <div className="panel shadow flex-1 min-h-300">
-              <h3 className="panel-header">
-                📋 Waypoint Editor
-              </h3>
-
-              {selectedWp && selectedWpIndex !== null ? (
-                <div className="flex flex-col gap-3 flex-1">
-                  <div className="flex items-center justify-between text-xxs font-mono">
-                    <span className="text-gray-400 font-bold">Selected Target:</span>
-                    <span className="bg-purple-900-60 border border-purple-700 px-2 py-0.5 rounded text-purple-200">
-                      WP #{selectedWpIndex + 1}
-                    </span>
-                  </div>
-
-                  <div className="form-group">
-                    <label className="form-label">Command Type</label>
-                    <select
-                      value={selectedWp.command}
-                      onChange={(e) => updateSelectedWpField("command", e.target.value)}
-                      className="form-select"
-                    >
-                      <option value="TAKEOFF">TAKEOFF (🚀)</option>
-                      <option value="WAYPOINT">WAYPOINT (📍)</option>
-                      <option value="RTL">RTL (🏠)</option>
-                    </select>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="form-group">
-                      <label className="form-label">Latitude</label>
-                      <input
-                        type="number"
-                        step="0.000001"
-                        value={selectedWp.latitude}
-                        onChange={(e) => updateSelectedWpField("latitude", parseFloat(e.target.value) || 0)}
-                        className="form-input"
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label className="form-label">Longitude</label>
-                      <input
-                        type="number"
-                        step="0.000001"
-                        value={selectedWp.longitude}
-                        onChange={(e) => updateSelectedWpField("longitude", parseFloat(e.target.value) || 0)}
-                        className="form-input"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="form-group">
-                      <label className="form-label">Altitude (m)</label>
-                      <input
-                        type="number"
-                        value={selectedWp.altitude}
-                        onChange={(e) => updateSelectedWpField("altitude", parseFloat(e.target.value) || 0)}
-                        className="form-input"
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label className="form-label">Hold Time (s)</label>
-                      <input
-                        type="number"
-                        value={selectedWp.hold_time || 0}
-                        disabled={selectedWp.command !== "WAYPOINT"}
-                        onChange={(e) => updateSelectedWpField("hold_time", parseInt(e.target.value) || 0)}
-                        className="form-input"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2 mt-auto">
-                    <button
-                      onClick={() => moveSelectedWp("up")}
-                      disabled={selectedWpIndex === 0}
-                      className="flex-1 btn btn-secondary text-xxs py-2"
-                    >
-                      ▲ Up
-                    </button>
-                    <button
-                      onClick={() => moveSelectedWp("down")}
-                      disabled={selectedWpIndex === waypoints.length - 1}
-                      className="flex-1 btn btn-secondary text-xxs py-2"
-                    >
-                      ▼ Down
-                    </button>
-                  </div>
-
-                  <button
-                    onClick={removeSelectedWp}
-                    className="btn btn-outline-danger w-full py-2"
-                  >
-                    <Trash2 className="w-3-5 h-3-5" /> Remove Waypoint
-                  </button>
-                </div>
-              ) : (
-                <div className="flex-1 flex flex-col justify-center items-center text-center text-gray-500 text-xxs p-4 border border-dashed border-gray-800 rounded-lg">
-                  <Layers className="w-8 h-8 mb-2 opacity-30" />
-                  No waypoint selected.<br />
-                  Double-click map to add waypoints, or select an index marker to edit.
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Mission syncing progress and control */}
-          {activeVehicleId !== null && (
-            <div className="panel shadow">
-              <h3 className="panel-header">
-                🛫 Mission Sync Deck
-              </h3>
-              <div className="flex flex-col gap-2.5">
-                
-                {/* Loader shortcuts */}
-                <div className="flex gap-2 w-full">
-                  <button
-                    onClick={loadSampleMission}
-                    className="btn btn-secondary flex-1 text-xxs"
-                  >
-                    Sample Mission
-                  </button>
-                  <button
-                    onClick={clearWaypoints}
-                    className="btn btn-outline-danger flex-1 text-xxs"
-                  >
-                    Clear Map
-                  </button>
-                </div>
-
-                <button
-                  onClick={sendMissionUpload}
-                  disabled={waypoints.length === 0}
-                  className="btn btn-primary w-full py-2 text-xs"
-                >
-                  <Upload className="w-4 h-4" /> Upload to Drone #{activeVehicleId}
-                </button>
-
-                {/* Progress reporting status card */}
-                {missionStatus.state !== "IDLE" && (
-                  <div className="mission-progress-box">
-                    <div className="flex justify-between items-center">
-                      <span className="text-gray-500 text-[9px] uppercase font-bold">Upload Status:</span>
-                      <span className={`font-bold uppercase flex items-center gap-1 text-xxs ${
-                        missionStatus.state === "SUCCESS" ? "text-emerald-400" :
-                        missionStatus.state === "ERROR" ? "text-rose-400" : "text-sky-400"
-                      }`}>
-                        {missionStatus.state === "SUCCESS" && <CheckCircle className="w-3-5 h-3-5" />}
-                        {missionStatus.state === "ERROR" && <AlertTriangle className="w-3-5 h-3-5" />}
-                        {missionStatus.state === "UPLOADING" && <RefreshCw className="w-3-5 h-3-5 animate-spin" />}
-                        {missionStatus.state}
+                {selectedWp && selectedWpIndex !== null ? (
+                  <div className="flex flex-col gap-3 flex-1">
+                    <div className="flex items-center justify-between text-xxs font-mono">
+                      <span className="text-gray-400 font-bold">Selected Target:</span>
+                      <span className="bg-purple-900-60 border border-purple-700 px-2 py-0.5 rounded text-purple-200">
+                        WP #{selectedWpIndex + 1}
                       </span>
                     </div>
 
-                    {missionStatus.state === "UPLOADING" && (
-                      <div className="progress-bar-container">
-                        <div 
-                          className="progress-bar-fill"
-                          style={{ width: `${missionStatus.progress}%` }}
+                    <div className="form-group">
+                      <label className="form-label">Command Type</label>
+                      <select
+                        value={selectedWp.command}
+                        onChange={(e) => updateSelectedWpField("command", e.target.value)}
+                        className="form-select"
+                      >
+                        <option value="TAKEOFF">TAKEOFF (🚀)</option>
+                        <option value="WAYPOINT">WAYPOINT (📍)</option>
+                        <option value="RTL">RTL (🏠)</option>
+                      </select>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="form-group">
+                        <label className="form-label">Latitude</label>
+                        <input
+                          type="number"
+                          step="0.000001"
+                          value={selectedWp.latitude}
+                          onChange={(e) => updateSelectedWpField("latitude", parseFloat(e.target.value) || 0)}
+                          className="form-input"
                         />
                       </div>
-                    )}
-
-                    <div className="text-[9px] text-gray-400 leading-normal break-words mt-1">
-                      {missionStatus.message}
+                      <div className="form-group">
+                        <label className="form-label">Longitude</label>
+                        <input
+                          type="number"
+                          step="0.000001"
+                          value={selectedWp.longitude}
+                          onChange={(e) => updateSelectedWpField("longitude", parseFloat(e.target.value) || 0)}
+                          className="form-input"
+                        />
+                      </div>
                     </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="form-group">
+                        <label className="form-label">Altitude (m)</label>
+                        <input
+                          type="number"
+                          value={selectedWp.altitude}
+                          onChange={(e) => updateSelectedWpField("altitude", parseFloat(e.target.value) || 0)}
+                          className="form-input"
+                        />
+                      </div>
+                      <div className="form-group">
+                        <label className="form-label">Hold Time (s)</label>
+                        <input
+                          type="number"
+                          value={selectedWp.hold_time || 0}
+                          disabled={selectedWp.command !== "WAYPOINT"}
+                          onChange={(e) => updateSelectedWpField("hold_time", parseInt(e.target.value) || 0)}
+                          className="form-input"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2 mt-auto">
+                      <button
+                        onClick={() => moveSelectedWp("up")}
+                        disabled={selectedWpIndex === 0}
+                        className="flex-1 btn btn-secondary text-xxs py-2"
+                      >
+                        ▲ Up
+                      </button>
+                      <button
+                        onClick={() => moveSelectedWp("down")}
+                        disabled={selectedWpIndex === waypoints.length - 1}
+                        className="flex-1 btn btn-secondary text-xxs py-2"
+                      >
+                        ▼ Down
+                      </button>
+                    </div>
+
+                    <button
+                      onClick={removeSelectedWp}
+                      className="btn btn-outline-danger w-full py-2"
+                    >
+                      <Trash2 className="w-3-5 h-3-5" /> Remove Waypoint
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex flex-col justify-center items-center text-center text-gray-500 text-xxs p-4 border border-dashed border-gray-800 rounded-lg">
+                    <Layers className="w-8 h-8 mb-2 opacity-30" />
+                    No waypoint selected.<br />
+                    Double-click map to add waypoints, or select an index marker to edit.
                   </div>
                 )}
               </div>
+            )}
+
+            {/* Mission syncing progress and control */}
+            {activeVehicleId !== null && (
+              <div className="panel shadow">
+                <h3 className="panel-header">
+                  🛫 Mission Sync Deck
+                </h3>
+                <div className="flex flex-col gap-2.5">
+                  
+                  {/* Loader shortcuts */}
+                  <div className="flex gap-2 w-full">
+                    <button
+                      onClick={loadSampleMission}
+                      className="btn btn-secondary flex-1 text-xxs"
+                    >
+                      Sample Mission
+                    </button>
+                    <button
+                      onClick={clearWaypoints}
+                      className="btn btn-outline-danger flex-1 text-xxs"
+                    >
+                      Clear Map
+                    </button>
+                  </div>
+
+                  <button
+                    onClick={sendMissionUpload}
+                    disabled={waypoints.length === 0}
+                    className="btn btn-primary w-full py-2 text-xs"
+                  >
+                    <Upload className="w-4 h-4" /> Upload to Drone #{activeVehicleId}
+                  </button>
+
+                  {/* Progress reporting status card */}
+                  {missionStatus.state !== "IDLE" && (
+                    <div className="mission-progress-box">
+                      <div className="flex justify-between items-center">
+                        <span className="text-gray-500 text-[9px] uppercase font-bold">Upload Status:</span>
+                        <span className={`font-bold uppercase flex items-center gap-1 text-xxs ${
+                          missionStatus.state === "SUCCESS" ? "text-emerald-400" :
+                          missionStatus.state === "ERROR" ? "text-rose-400" : "text-sky-400"
+                        }`}>
+                          {missionStatus.state === "SUCCESS" && <CheckCircle className="w-3-5 h-3-5" />}
+                          {missionStatus.state === "ERROR" && <AlertTriangle className="w-3-5 h-3-5" />}
+                          {missionStatus.state === "UPLOADING" && <RefreshCw className="w-3-5 h-3-5 animate-spin" />}
+                          {missionStatus.state}
+                        </span>
+                      </div>
+
+                      {missionStatus.state === "UPLOADING" && (
+                        <div className="progress-bar-container">
+                          <div 
+                            className="progress-bar-fill"
+                            style={{ width: `${missionStatus.progress}%` }}
+                          />
+                        </div>
+                      )}
+
+                      <div className="text-[9px] text-gray-400 leading-normal break-words mt-1">
+                        {missionStatus.message}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </aside>
+        )}
+
+        {/* ================================================================= */}
+        {/* 2.3 SETUP VIEW LAYOUT                                             */}
+        {/* ================================================================= */}
+        {viewMode === "setup" && (
+          <aside className="sidebar-right">
+            <div className="dropdown-menu-card" style={{ display: "block", position: "relative", width: "100%", top: 0, right: 0 }}>
+              <h3 className="text-xs uppercase font-mono tracking-wider text-gray-300 border-b border-gray-800 pb-2 mb-2">
+                ⚙️ Link Configuration Deck
+              </h3>
+
+              {/* Step A: WebSocket Link to Gateway */}
+              <div className="flex flex-col gap-2 bg-gray-900 p-2-5 rounded border border-gray-800 mb-3">
+                <span className="text-xxs font-mono text-gray-400 font-bold">1. PROXY WEBSOCKET:</span>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={wsUrl}
+                    onChange={(e) => setWsUrl(e.target.value)}
+                    disabled={isConnected}
+                    className="form-input flex-1"
+                  />
+                  {!isConnected ? (
+                    <button
+                      onClick={connectToGateway}
+                      disabled={isSimulating}
+                      className="btn btn-primary text-xs"
+                    >
+                      Connect
+                    </button>
+                  ) : (
+                    <button
+                      onClick={disconnectFromGateway}
+                      className="btn btn-danger text-xs"
+                    >
+                      Disconnect
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Step B: Sim controls shortcut */}
+              <div className="flex flex-col gap-2 bg-gray-900 p-2-5 rounded border border-gray-800 mb-3">
+                <span className="text-xxs font-mono text-gray-400 font-bold">2. MULTI-VEHICLE SIMULATOR:</span>
+                {!isSimulating ? (
+                  <button
+                    onClick={startLocalSimulator}
+                    disabled={isConnected}
+                    className="btn btn-success w-full text-xs"
+                  >
+                    Launch Local Sim
+                  </button>
+                ) : (
+                  <button
+                    onClick={stopLocalSimulator}
+                    className="btn btn-warning w-full text-xs"
+                  >
+                    Kill Simulator
+                  </button>
+                )}
+              </div>
+
+              {/* Step C: Setup MAVLink Downstream Connections (TCP/UDP/Serial) */}
+              <div className="flex flex-col gap-2.5 bg-gray-900 p-2-5 rounded border border-gray-800 mb-3">
+                <span className="text-xxs font-mono text-gray-400 font-bold">3. SPAWN MAVLINK BRIDGE (DOWNSTREAM):</span>
+                
+                <div className="form-group">
+                  <label className="form-label">Protocol Type</label>
+                  <select
+                    value={newLinkType}
+                    onChange={(e) => setNewLinkType(e.target.value as any)}
+                    className="form-select"
+                  >
+                    <option value="udp">UDP Port Listener (QGC SIH)</option>
+                    <option value="tcp">TCP Network Client</option>
+                    <option value="serial">Serial Telemetry Radio (COM)</option>
+                  </select>
+                </div>
+
+                {/* Contextual form inputs */}
+                {newLinkType === "udp" && (
+                  <div className="form-group">
+                    <label className="form-label">Listening UDP Port</label>
+                    <input
+                      type="number"
+                      value={udpPort}
+                      onChange={(e) => setUdpPort(Number(e.target.value))}
+                      className="form-input"
+                    />
+                  </div>
+                )}
+
+                {newLinkType === "tcp" && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="form-group">
+                      <label className="form-label">Host IP Address</label>
+                      <input
+                        type="text"
+                        value={tcpHost}
+                        onChange={(e) => setTcpHost(e.target.value)}
+                        className="form-input"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Port</label>
+                      <input
+                        type="number"
+                        value={tcpPort}
+                        onChange={(e) => setTcpPort(Number(e.target.value))}
+                        className="form-input"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {newLinkType === "serial" && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="form-group">
+                      <label className="form-label">Port Path</label>
+                      <input
+                        type="text"
+                        value={serialPort}
+                        onChange={(e) => setSerialPort(e.target.value)}
+                        className="form-input"
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">Baud Rate</label>
+                      <select
+                        value={serialBaud}
+                        onChange={(e) => setSerialBaud(Number(e.target.value))}
+                        className="form-select font-mono"
+                      >
+                        <option value={9600}>9600 bps</option>
+                        <option value={57600}>57600 bps (Radio)</option>
+                        <option value={115200}>115200 bps (Pixhawk)</option>
+                        <option value={921600}>921600 bps (Companion)</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  onClick={addDownstreamLink}
+                  disabled={!isConnected}
+                  className="btn btn-primary w-full text-xs flex items-center justify-center gap-1 mt-1"
+                >
+                  <Plus className="w-4 h-4" /> Add Bridge Connection
+                </button>
+              </div>
+
+              {/* Active downstream links */}
+              {gatewayLinks.length > 0 && (
+                <div className="flex flex-col gap-1.5 font-mono text-xxs text-gray-400">
+                  <span className="text-[9px] uppercase text-gray-500 font-bold">Active Gateway Links:</span>
+                  {gatewayLinks.map((link, idx) => (
+                    <div key={idx} className="bg-black/40 px-2 py-1 rounded border border-gray-800">
+                      🟢 {link}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
-        </aside>
+          </aside>
+        )}
+
+        {/* ================================================================= */}
+        {/* 2.4 SLIDE TO CONFIRM OVERLAY PANEL                                */}
+        {/* ================================================================= */}
+        {sliderAction && (
+          <div className="slider-overlay-container">
+            <h4 className="slider-title">Confirm Action: {sliderAction.label}</h4>
+            <div className="slide-confirm-wrapper">
+              <div className="slide-confirm-text">Slide to Confirm</div>
+              <div className="slide-confirm-fill" style={{ width: `${sliderValue}%` }} />
+              <div className="slide-confirm-handle" style={{ transform: `translateX(${sliderValue * 3.0}px)` }}>
+                <Navigation className="w-5 h-5 rotate-90 text-white" />
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={sliderValue}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  setSliderValue(val);
+                  if (val >= 100) {
+                    executeSliderAction(sliderAction);
+                    setSliderAction(null);
+                    setSliderValue(0);
+                  }
+                }}
+                onMouseUp={() => {
+                  if (sliderValue < 100) setSliderValue(0);
+                }}
+                onTouchEnd={() => {
+                  if (sliderValue < 100) setSliderValue(0);
+                }}
+                className="slide-confirm-input"
+              />
+            </div>
+            <button
+              onClick={() => {
+                setSliderAction(null);
+                setSliderValue(0);
+              }}
+              className="slide-confirm-cancel"
+            >
+              Cancel Guided Action
+            </button>
+          </div>
+        )}
 
       </div>
     </div>

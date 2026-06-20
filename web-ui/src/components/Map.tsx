@@ -34,6 +34,8 @@ interface MapProps {
   selectedWpIndex: number | null;
   onWaypointsChange: (wps: Waypoint[]) => void;
   onSelectWp: (idx: number | null) => void;
+  isFlyView: boolean;
+  onMapGuidedAction?: (action: "go_to" | "orbit", lat: number, lon: number) => void;
 }
 
 export const FlightMap: React.FC<MapProps> = ({
@@ -42,7 +44,9 @@ export const FlightMap: React.FC<MapProps> = ({
   waypoints,
   selectedWpIndex,
   onWaypointsChange,
-  onSelectWp
+  onSelectWp,
+  isFlyView,
+  onMapGuidedAction
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -55,6 +59,12 @@ export const FlightMap: React.FC<MapProps> = ({
   // Keep latest waypoints in ref to avoid effect loops
   const wpsStateRef = useRef<Waypoint[]>(waypoints);
   wpsStateRef.current = waypoints;
+
+  const isFlyViewRef = useRef(isFlyView);
+  isFlyViewRef.current = isFlyView;
+
+  const onMapGuidedActionRef = useRef(onMapGuidedAction);
+  onMapGuidedActionRef.current = onMapGuidedAction;
 
   // 1. Initialize map
   useEffect(() => {
@@ -76,11 +86,37 @@ export const FlightMap: React.FC<MapProps> = ({
     // Re-add Zoom control at custom position (bottom-right) to keep UI clean
     L.control.zoom({ position: "bottomright" }).addTo(map);
 
-    map.on("click", () => {
-      onSelectWp(null);
+    map.on("click", (e) => {
+      if (isFlyViewRef.current) {
+        const { lat, lng } = e.latlng;
+        const popupContent = document.createElement("div");
+        popupContent.style.minWidth = "120px";
+        popupContent.innerHTML = `
+          <div style="font-family: monospace; font-size: 10px; font-weight: bold; margin-bottom: 6px; color: #a855f7; border-bottom: 1px solid #3f3f46; padding-bottom: 3px;">GUIDED ACTION</div>
+          <button class="popup-btn go-to" style="display: block; width: 100%; text-align: left; background: #1e293b; color: #60a5fa; border: 1px solid #3b82f6; padding: 5px 8px; border-radius: 4px; margin-bottom: 5px; font-size: 10px; cursor: pointer; font-weight: bold;">📍 Go To Here</button>
+          <button class="popup-btn orbit" style="display: block; width: 100%; text-align: left; background: #1e293b; color: #ec4899; border: 1px solid #db2777; padding: 5px 8px; border-radius: 4px; font-size: 10px; cursor: pointer; font-weight: bold;">🔄 Orbit Here</button>
+        `;
+
+        L.popup({ closeButton: false })
+          .setLatLng(e.latlng)
+          .setContent(popupContent)
+          .openOn(map);
+
+        popupContent.querySelector(".go-to")?.addEventListener("click", () => {
+          onMapGuidedActionRef.current?.("go_to", lat, lng);
+          map.closePopup();
+        });
+        popupContent.querySelector(".orbit")?.addEventListener("click", () => {
+          onMapGuidedActionRef.current?.("orbit", lat, lng);
+          map.closePopup();
+        });
+      } else {
+        onSelectWp(null);
+      }
     });
 
     map.on("dblclick", (e) => {
+      if (isFlyViewRef.current) return;
       const { lat, lng } = e.latlng;
       const currentWps = [...wpsStateRef.current];
       

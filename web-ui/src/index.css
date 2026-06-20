@@ -613,3 +613,285 @@ body, html {
   background: transparent;
   border: none;
 }
+
+/* Custom QGC-style View Toggles */
+.view-toggles {
+  display: flex;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 3px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+}
+
+.view-toggle-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  text-transform: uppercase;
+}
+
+.view-toggle-btn:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.view-toggle-btn.active {
+  color: #ffffff;
+  background: var(--color-primary);
+  box-shadow: 0 0 10px rgba(14, 165, 233, 0.4);
+}
+
+/* Custom QGC-style Header Telemetry Badges */
+.header-badges-deck {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(17, 24, 39, 0.7);
+  border: 1px solid var(--border-color);
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-main);
+}
+
+.header-badge svg {
+  color: var(--text-muted);
+}
+
+.header-badge-label {
+  color: var(--text-muted);
+  font-size: 9px;
+  text-transform: uppercase;
+  margin-right: 2px;
+}
+
+.header-badge-val {
+  font-weight: bold;
+}
+
+/* Fly Tools Panel on Left */
+.fly-tools-panel {
+  position: absolute;
+  top: 80px;
+  left: 20px;
+  z-index: 400;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 72px;
+}
+
+.fly-tool-btn {
+  background: rgba(17, 24, 39, 0.9);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  border-radius: 8px;
+  height: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.fly-tool-btn:hover:not(:disabled) {
+  background: var(--bg-input);
+  border-color: var(--text-muted);
+}
+
+.fly-tool-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.fly-tool-btn-label {
+  font-size: 9px;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.fly-tool-btn.active {
+  border-color: var(--color-success);
+  color: var(--color-success);
+  background: rgba(16, 185, 129, 0.1);
+  box-shadow: 0 0 10px rgba(16, 185, 129, 0.2);
+}
+
+.fly-tool-btn.danger {
+  color: var(--color-danger);
+}
+
+.fly-tool-btn.danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: var(--color-danger);
+  color: white;
+}
+
+/* Slide to Confirm Overlay Panel */
+.slider-overlay-container {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 600;
+  width: 380px;
+  background: rgba(10, 15, 30, 0.95);
+  border: 1px solid rgba(139, 92, 246, 0.4); /* purple accent border */
+  border-radius: 12px;
+  padding: 16px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6), 0 0 20px rgba(139, 92, 246, 0.1);
+  animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideUp {
+  from { transform: translate(-50%, 20px); opacity: 0; }
+  to { transform: translate(-50%, 0); opacity: 1; }
+}
+
+.slider-title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #d8b4fe; /* light purple */
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+/* Custom Sliding Confirm Track and Thumb */
+.slide-confirm-wrapper {
+  position: relative;
+  width: 100%;
+  height: 52px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--border-color);
+  border-radius: 26px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.slide-confirm-text {
+  position: absolute;
+  width: 100%;
+  text-align: center;
+  font-weight: bold;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  pointer-events: none;
+  z-index: 10;
+  animation: blinkText 2s infinite;
+}
+
+@keyframes blinkText {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 0.9; }
+}
+
+/* Styled HTML5 Range Input acting as Slide to Confirm */
+.slide-confirm-input {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  top: 0;
+  left: 0;
+  opacity: 0; /* hidden range selector over background */
+  cursor: grab;
+  z-index: 20;
+}
+
+.slide-confirm-input:active {
+  cursor: grabbing;
+}
+
+/* Visually rendered glowing slide track fill & slider handle */
+.slide-confirm-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  background: rgba(16, 185, 129, 0.15);
+  border-radius: 26px 0 0 26px;
+  pointer-events: none;
+}
+
+.slide-confirm-handle {
+  position: absolute;
+  left: 0;
+  top: 2px;
+  width: 48px;
+  height: 48px;
+  background: var(--color-success);
+  border-radius: 50%;
+  box-shadow: 0 0 15px var(--color-success);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  pointer-events: none;
+  z-index: 15;
+  transition: transform 0.05s linear;
+}
+
+.slide-confirm-cancel {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: bold;
+  padding: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.slide-confirm-cancel:hover {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: var(--color-danger);
+  color: white;
+}
+
+/* Leaflet Custom Guided Action Popup Design */
+.qgc-guided-popup .leaflet-popup-content-wrapper {
+  background: rgba(10, 15, 30, 0.95) !important;
+  color: white !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.5) !important;
+  padding: 4px !important;
+}
+
+.qgc-guided-popup .leaflet-popup-tip {
+  background: rgba(10, 15, 30, 0.95) !important;
+  border-left: 1px solid var(--border-color) !important;
+  border-bottom: 1px solid var(--border-color) !important;
+}

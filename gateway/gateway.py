@@ -293,6 +293,39 @@ class Gateway:
                         elif cmd_type == "upload_mission":
                             state["waypoints"] = cmd.get("waypoints", [])
                             print(f"[Mock #{vehicle_id}] Received {len(state['waypoints'])} waypoints.")
+                        elif cmd_type == "takeoff":
+                            state["armed"] = True
+                            state["flying"] = True
+                            state["mode"] = "TAKEOFF"
+                            state["target_alt"] = cmd.get("altitude", 10.0)
+                            print(f"[Mock #{vehicle_id}] Guided Takeoff requested. Target alt: {state['target_alt']}m")
+                        elif cmd_type == "land":
+                            state["mode"] = "LAND"
+                            print(f"[Mock #{vehicle_id}] Guided Land requested.")
+                        elif cmd_type == "rtl":
+                            state["mode"] = "RTL"
+                            state["flying"] = True
+                            print(f"[Mock #{vehicle_id}] Guided RTL requested.")
+                        elif cmd_type == "pause":
+                            state["mode"] = "HOLD"
+                            state["flying"] = False
+                            print(f"[Mock #{vehicle_id}] Guided Pause requested.")
+                        elif cmd_type == "go_to":
+                            state["mode"] = "GO_TO"
+                            state["flying"] = True
+                            state["target_lat"] = cmd.get("latitude")
+                            state["target_lon"] = cmd.get("longitude")
+                            state["target_alt"] = cmd.get("altitude", state["alt"])
+                            print(f"[Mock #{vehicle_id}] Guided Go To requested. Lat/Lon: {state['target_lat']},{state['target_lon']}")
+                        elif cmd_type == "orbit":
+                            state["mode"] = "ORBIT"
+                            state["flying"] = True
+                            state["target_lat"] = cmd.get("latitude")
+                            state["target_lon"] = cmd.get("longitude")
+                            state["target_alt"] = cmd.get("altitude", state["alt"])
+                            state["orbit_radius"] = cmd.get("radius", 20.0)
+                            state["orbit_angle"] = 0.0
+                            print(f"[Mock #{vehicle_id}] Guided Orbit requested. Center Lat/Lon: {state['target_lat']},{state['target_lon']}, Radius: {state['orbit_radius']}m")
             except queue.Empty:
                 pass
                 
@@ -313,7 +346,146 @@ class Gateway:
                 mode = state["mode"]
                 battery_volts = state["battery_volts"]
                 
-                if flying and waypoints and target_wp_idx < len(waypoints):
+                if flying and mode == "TAKEOFF":
+                    # Climb altitude
+                    target_alt = state.get("target_alt", 10.0)
+                    d_alt = target_alt - alt
+                    if d_alt > 0.1:
+                        alt += 0.3
+                        pitch = 7.0
+                        groundspeed = 1.0
+                    else:
+                        pitch = 0.0
+                        mode = "HOLD" # Hover after takeoff
+                        state["mode"] = "HOLD"
+                        print(f"[Mock #{vid}] Takeoff completed. Hovering.")
+                        
+                elif flying and mode == "LAND":
+                    # Descend
+                    if alt > 0.1:
+                        alt -= 0.2
+                        pitch = -7.0
+                        groundspeed = 0.5
+                    else:
+                        alt = 0.0
+                        pitch = 0.0
+                        flying = False
+                        armed = False
+                        mode = "HOLD"
+                        state["mode"] = "HOLD"
+                        print(f"[Mock #{vid}] Land completed. Disarmed.")
+                        
+                elif flying and mode == "RTL":
+                    # Return to launch home coordinates
+                    home_lat = 24.7746 if vid == 1 else 24.7760
+                    home_lon = 121.0446 if vid == 1 else 121.0465
+                    dy = home_lat - lat
+                    dx = home_lon - lon
+                    dist = math.sqrt(dx*dx + dy*dy)
+                    
+                    if dist > 0.00005:
+                        groundspeed = 11.5 if vid == 1 else 9.5
+                        airspeed = groundspeed
+                        step_size = 0.00001
+                        lat += (dy / dist) * step_size
+                        lon += (dx / dist) * step_size
+                        yaw = math.degrees(math.atan2(dx, dy)) % 360
+                        
+                        # Set altitude to a safe return alt (e.g. 15m)
+                        d_alt = 15.0 - alt
+                        if abs(d_alt) > 0.5:
+                            alt += math.copysign(0.2, d_alt)
+                            pitch = 5.0 if d_alt > 0 else -5.0
+                        else:
+                            pitch = 0.0
+                        roll = 2.0 * math.sin(tick * 0.1)
+                    else:
+                        # Close enough, land
+                        mode = "LAND"
+                        state["mode"] = "LAND"
+                        print(f"[Mock #{vid}] RTL arrived at Home. Landing...")
+                        
+                elif flying and mode == "GO_TO":
+                    # Guided Reposition
+                    target_lat = state.get("target_lat", lat)
+                    target_lon = state.get("target_lon", lon)
+                    target_alt = state.get("target_alt", alt)
+                    
+                    dy = target_lat - lat
+                    dx = target_lon - lon
+                    dist = math.sqrt(dx*dx + dy*dy)
+                    
+                    if dist > 0.00005:
+                        groundspeed = 11.5 if vid == 1 else 9.5
+                        airspeed = groundspeed
+                        step_size = 0.00001
+                        lat += (dy / dist) * step_size
+                        lon += (dx / dist) * step_size
+                        yaw = math.degrees(math.atan2(dx, dy)) % 360
+                        
+                        d_alt = target_alt - alt
+                        if abs(d_alt) > 0.5:
+                            alt += math.copysign(0.2, d_alt)
+                            pitch = 5.0 if d_alt > 0 else -5.0
+                        else:
+                            pitch = 0.0
+                        roll = 2.0 * math.sin(tick * 0.1)
+                    else:
+                        groundspeed = 0.0
+                        pitch = 0.0
+                        mode = "HOLD"
+                        state["mode"] = "HOLD"
+                        print(f"[Mock #{vid}] Guided Go To destination reached. Hovering.")
+                        
+                elif flying and mode == "ORBIT":
+                    # Guided Orbit Center
+                    center_lat = state.get("target_lat", lat)
+                    center_lon = state.get("target_lon", lon)
+                    target_alt = state.get("target_alt", alt)
+                    orbit_radius = state.get("orbit_radius", 20.0)
+                    angle = state.get("orbit_angle", 0.0)
+                    
+                    # Convert meters to degrees
+                    r_lat_deg = orbit_radius * 0.000009
+                    r_lon_deg = orbit_radius * 0.000010
+                    
+                    # Target point on the circle edge
+                    target_lat = center_lat + r_lat_deg * math.cos(angle)
+                    target_lon = center_lon + r_lon_deg * math.sin(angle)
+                    
+                    dy = target_lat - lat
+                    dx = target_lon - lon
+                    dist = math.sqrt(dx*dx + dy*dy)
+                    
+                    if dist > 0.00005:
+                        # Fly to orbit perimeter first
+                        groundspeed = 11.5 if vid == 1 else 9.5
+                        airspeed = groundspeed
+                        step_size = 0.00001
+                        lat += (dy / dist) * step_size
+                        lon += (dx / dist) * step_size
+                        yaw = math.degrees(math.atan2(dx, dy)) % 360
+                        roll = 2.0 * math.sin(tick * 0.1)
+                    else:
+                        # Close enough, circle!
+                        groundspeed = 5.0
+                        airspeed = groundspeed
+                        angle += 0.05
+                        state["orbit_angle"] = angle
+                        lat = center_lat + r_lat_deg * math.cos(angle)
+                        lon = center_lon + r_lon_deg * math.sin(angle)
+                        # Heading is tangent to circle
+                        yaw = math.degrees(angle + math.pi/2) % 360
+                        roll = 8.0 # Bank inwards
+                        
+                    d_alt = target_alt - alt
+                    if abs(d_alt) > 0.5:
+                        alt += math.copysign(0.2, d_alt)
+                        pitch = 5.0 if d_alt > 0 else -5.0
+                    else:
+                        pitch = 0.0
+                        
+                elif flying and mode == "MISSION" and waypoints and target_wp_idx < len(waypoints):
                     wp = waypoints[target_wp_idx]
                     wp_lat = wp.get("latitude")
                     wp_lon = wp.get("longitude")
@@ -352,12 +524,14 @@ class Gateway:
                                 flying = False
                                 armed = False
                                 mode = "HOLD"
+                                state["mode"] = "HOLD"
                                 alt = 0.0
                             else:
                                 target_wp_idx += 1
                                 if target_wp_idx >= len(waypoints):
                                     flying = False
                                     mode = "HOLD"
+                                    state["mode"] = "HOLD"
                     else:
                         if cmd_name == "TAKEOFF":
                             d_alt = wp_alt - alt
@@ -379,6 +553,7 @@ class Gateway:
                                 flying = False
                                 armed = False
                                 mode = "HOLD"
+                                state["mode"] = "HOLD"
                 else:
                     roll = 0.5 * math.sin(tick * 0.05 + vid)
                     pitch = 0.3 * math.cos(tick * 0.07 - vid)
@@ -451,10 +626,23 @@ class Gateway:
                 
                 if task_type == "upload_mission":
                     self._handle_upload_mission(task)
-                elif task_type == "arm" and not self.use_mock:
-                    self._handle_arm_disarm(vehicle_id, task.get("armed", False))
-                elif task_type == "set_mode" and not self.use_mock:
-                    self._handle_change_mode(vehicle_id, task.get("mode", "HOLD"))
+                elif not self.use_mock:
+                    if task_type == "arm":
+                        self._handle_arm_disarm(vehicle_id, task.get("armed", False))
+                    elif task_type == "set_mode":
+                        self._handle_change_mode(vehicle_id, task.get("mode", "HOLD"))
+                    elif task_type == "takeoff":
+                        self._handle_takeoff(vehicle_id, task.get("altitude", 10.0))
+                    elif task_type == "land":
+                        self._handle_land(vehicle_id)
+                    elif task_type == "rtl":
+                        self._handle_rtl(vehicle_id)
+                    elif task_type == "pause":
+                        self._handle_pause(vehicle_id)
+                    elif task_type == "go_to":
+                        self._handle_go_to(vehicle_id, task.get("latitude"), task.get("longitude"), task.get("altitude"))
+                    elif task_type == "orbit":
+                        self._handle_orbit(vehicle_id, task.get("latitude"), task.get("longitude"), task.get("altitude"), task.get("radius", 20.0))
                     
             except queue.Empty:
                 pass
@@ -643,6 +831,73 @@ class Gateway:
             )
             print(f"⚙️ MAVLink mode set for Vehicle #{vehicle_id}: PX4 {mode} (main {main_mode}, sub {sub_mode})")
 
+    def _handle_takeoff(self, vehicle_id: int, altitude: float):
+        master = self.vehicle_masters.get(vehicle_id)
+        if not master:
+            return
+        # Arm first
+        master.mav.command_long_send(
+            vehicle_id, 1, mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0,
+            1.0, 0, 0, 0, 0, 0, 0
+        )
+        time.sleep(0.5)
+        # Takeoff
+        master.mav.command_long_send(
+            vehicle_id, 1, mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(altitude)
+        )
+        print(f"⚙️ MAVLink takeoff command sent to Vehicle #{vehicle_id} altitude={altitude}")
+
+    def _handle_land(self, vehicle_id: int):
+        master = self.vehicle_masters.get(vehicle_id)
+        if not master:
+            return
+        master.mav.command_long_send(
+            vehicle_id, 1, mavutil.mavlink.MAV_CMD_NAV_LAND, 0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        )
+        print(f"⚙️ MAVLink land command sent to Vehicle #{vehicle_id}")
+
+    def _handle_rtl(self, vehicle_id: int):
+        master = self.vehicle_masters.get(vehicle_id)
+        if not master:
+            return
+        master.mav.command_long_send(
+            vehicle_id, 1, mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH, 0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        )
+        print(f"⚙️ MAVLink RTL command sent to Vehicle #{vehicle_id}")
+
+    def _handle_pause(self, vehicle_id: int):
+        master = self.vehicle_masters.get(vehicle_id)
+        if not master:
+            return
+        master.mav.command_long_send(
+            vehicle_id, 1, mavutil.mavlink.MAV_CMD_DO_PAUSE, 0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        )
+        print(f"⚙️ MAVLink pause command sent to Vehicle #{vehicle_id}")
+
+    def _handle_go_to(self, vehicle_id: int, lat: float, lon: float, alt: float):
+        master = self.vehicle_masters.get(vehicle_id)
+        if not master:
+            return
+        master.mav.command_long_send(
+            vehicle_id, 1, mavutil.mavlink.MAV_CMD_DO_REPOSITION, 0,
+            -1.0, 0.0, 0.0, 0.0, int(lat * 1e7), int(lon * 1e7), float(alt)
+        )
+        print(f"⚙️ MAVLink reposition (Go To) sent to Vehicle #{vehicle_id}: lat={lat}, lon={lon}, alt={alt}")
+
+    def _handle_orbit(self, vehicle_id: int, lat: float, lon: float, alt: float, radius: float):
+        master = self.vehicle_masters.get(vehicle_id)
+        if not master:
+            return
+        master.mav.command_long_send(
+            vehicle_id, 1, mavutil.mavlink.MAV_CMD_DO_ORBIT, 0,
+            float(radius), -1.0, 0.0, 0.0, int(lat * 1e7), int(lon * 1e7), float(alt)
+        )
+        print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, alt={alt}, radius={radius}")
+
     # --- WEBSOCKET COMMUNICATION (ASYNCIO) ---
     async def _ws_broadcast_loop(self):
         """Pops telemetry/status messages and broadcasts to all Web UI clients."""
@@ -715,6 +970,39 @@ class Gateway:
                     elif action == "set_mode":
                         mode = data.get("mode", "HOLD")
                         self.to_drone_queue.put({"type": "set_mode", "vehicle_id": vehicle_id, "mode": mode})
+                    elif action == "takeoff":
+                        alt = data.get("altitude", 10.0)
+                        self.to_drone_queue.put({"type": "takeoff", "vehicle_id": vehicle_id, "altitude": alt})
+                    elif action == "land":
+                        self.to_drone_queue.put({"type": "land", "vehicle_id": vehicle_id})
+                    elif action == "rtl":
+                        self.to_drone_queue.put({"type": "rtl", "vehicle_id": vehicle_id})
+                    elif action == "pause":
+                        self.to_drone_queue.put({"type": "pause", "vehicle_id": vehicle_id})
+                    elif action == "go_to":
+                        lat = data.get("latitude")
+                        lon = data.get("longitude")
+                        alt = data.get("altitude")
+                        self.to_drone_queue.put({
+                            "type": "go_to", 
+                            "vehicle_id": vehicle_id, 
+                            "latitude": lat, 
+                            "longitude": lon, 
+                            "altitude": alt
+                        })
+                    elif action == "orbit":
+                        lat = data.get("latitude")
+                        lon = data.get("longitude")
+                        alt = data.get("altitude")
+                        radius = data.get("radius", 20.0)
+                        self.to_drone_queue.put({
+                            "type": "orbit", 
+                            "vehicle_id": vehicle_id, 
+                            "latitude": lat, 
+                            "longitude": lon, 
+                            "altitude": alt,
+                            "radius": radius
+                        })
                     elif action == "upload_mission":
                         waypoints = data.get("waypoints", [])
                         mission_id = data.get("mission_id", "mission")
