@@ -940,15 +940,29 @@ class Gateway:
                     
                     if action == "add_connection":
                         conn_type = data.get("type", "udp")
+                        role = data.get("role", "server") # "server" or "client"
                         conn_str = ""
                         
                         if conn_type == "udp":
                             port = data.get("port", 14540)
-                            conn_str = f"udp:127.0.0.1:{port}"
+                            if role == "server":
+                                # Bind locally to receive telemetry (udpin)
+                                host = data.get("host", "0.0.0.0")
+                                conn_str = f"udpin:{host}:{port}"
+                            else:
+                                # Send out packets to a target IP (udpout)
+                                host = data.get("host", "127.0.0.1")
+                                conn_str = f"udpout:{host}:{port}"
                         elif conn_type == "tcp":
                             host = data.get("host", "127.0.0.1")
                             port = data.get("port", 5760)
-                            conn_str = f"tcp:{host}:{port}"
+                            if role == "server":
+                                # Bind locally and listen for incoming client (tcpin)
+                                host_ip = data.get("host", "0.0.0.0")
+                                conn_str = f"tcpin:{host_ip}:{port}"
+                            else:
+                                # Connect to a remote tcp server (tcp client)
+                                conn_str = f"tcp:{host}:{port}"
                         elif conn_type == "serial":
                             port_path = data.get("port", "/dev/ttyUSB0")
                             baud = data.get("baud", 57600)

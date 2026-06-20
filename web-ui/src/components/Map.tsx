@@ -25,6 +25,7 @@ export interface MapVehicle {
   heading: number;
   armed: boolean;
   mode: string;
+  altitude?: number; // Relative altitude in meters
 }
 
 interface MapProps {
@@ -235,16 +236,43 @@ export const FlightMap: React.FC<MapProps> = ({
         iconAnchor: [17, 17]
       });
 
+      // HTML template for the dynamic following popup
+      const popupHtml = `
+        <div style="font-family: monospace; font-size: 11px; padding: 4px; line-height: 1.4; color: #f3f4f6; min-width: 140px; background: rgba(15, 23, 42, 0.9); border-radius: 4px;">
+          <div style="font-weight: bold; border-bottom: 1px solid #4b5563; padding-bottom: 4px; margin-bottom: 4px; color: ${isActive ? "#10B981" : "#9ca3af"}; display: flex; justify-content: space-between; gap: 8px;">
+            <span>Drone #${id}</span>
+            <span style="font-size: 10px; background: rgba(59, 130, 246, 0.2); padding: 1px 4px; border-radius: 3px; color: #60a5fa;">${vehicle.mode}</span>
+          </div>
+          <div>Alt: <span style="font-weight: bold; color: #38bdf8;">${(vehicle.altitude ?? 0.0).toFixed(1)} m</span></div>
+          <div>Yaw: <span style="font-weight: bold; color: #fbbf24;">${vehicle.heading}°</span></div>
+          <div style="font-size: 10px; color: #9ca3af; margin-top: 2px;">Pos: <span style="color: #a855f7;">${vehicle.latitude.toFixed(5)}, ${vehicle.longitude.toFixed(5)}</span></div>
+        </div>
+      `;
+
       if (!droneMarkersRef.current[id]) {
-        droneMarkersRef.current[id] = L.marker([vehicle.latitude, vehicle.longitude], { icon: droneIcon }).addTo(map);
+        const marker = L.marker([vehicle.latitude, vehicle.longitude], { icon: droneIcon }).addTo(map);
+        
+        // Bind the dynamic popup. leaflet automatically shifts the popup when marker position changes
+        marker.bindPopup(popupHtml, {
+          closeButton: false,
+          closeOnClick: false,
+          autoClose: false,
+          className: "drone-popup-follow",
+          offset: [0, -10]
+        });
+
+        droneMarkersRef.current[id] = marker;
         
         // Auto-center map if it's the first time placing the active drone
         if (isActive) {
           map.setView([vehicle.latitude, vehicle.longitude], map.getZoom());
         }
       } else {
-        droneMarkersRef.current[id].setLatLng([vehicle.latitude, vehicle.longitude]);
-        droneMarkersRef.current[id].setIcon(droneIcon);
+        const marker = droneMarkersRef.current[id];
+        marker.setLatLng([vehicle.latitude, vehicle.longitude]);
+        marker.setIcon(droneIcon);
+        // Live update the open popup content
+        marker.setPopupContent(popupHtml);
       }
     });
 

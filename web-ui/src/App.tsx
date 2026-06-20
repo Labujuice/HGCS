@@ -8,7 +8,6 @@ import {
   Upload, 
   Trash2, 
   Layers, 
-  TrendingUp, 
   Battery, 
   Compass, 
   Navigation,
@@ -58,8 +57,9 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [isSimulating, setIsSimulating] = useState(false);
   
-  // View mode tab state: "fly" | "plan" | "setup"
-  const [viewMode, setViewMode] = useState<"fly" | "plan" | "setup">("fly");
+  // View mode tab state: "fly" | "plan"
+  const [viewMode, setViewMode] = useState<"fly" | "plan">("fly");
+  const [showConnectionSettings, setShowConnectionSettings] = useState(false);
   
   // Slide to confirm actions state
   const [sliderAction, setSliderAction] = useState<{ type: string; label: string; data?: any } | null>(null);
@@ -70,11 +70,17 @@ function App() {
   
   // Form state for adding downstream connection
   const [newLinkType, setNewLinkType] = useState<"udp" | "tcp" | "serial">("udp");
+  const [newLinkRole, setNewLinkRole] = useState<"server" | "client">("server");
+  const [newLinkHost, setNewLinkHost] = useState("127.0.0.1");
   const [udpPort, setUdpPort] = useState(14540);
-  const [tcpHost, setTcpHost] = useState("127.0.0.1");
   const [tcpPort, setTcpPort] = useState(5760);
   const [serialPort, setSerialPort] = useState("/dev/ttyUSB0");
   const [serialBaud, setSerialBaud] = useState(57600);
+
+  // Real-time climb rate state
+  const [climbRate, setClimbRate] = useState(0);
+  const lastAltRef = useRef(0);
+  const lastAltTimeRef = useRef(Date.now());
 
   // Multi-Vehicle states
   const [activeVehicleId, setActiveVehicleId] = useState<number | null>(null);
@@ -125,6 +131,25 @@ function App() {
     wpsRef.current = vehicleWaypoints;
   }, [vehicleWaypoints]);
 
+  // Real-time vertical speed calculation
+  useEffect(() => {
+    if (activeVehicleId !== null && activeVehicle) {
+      const now = Date.now();
+      const dt = (now - lastAltTimeRef.current) / 1000.0;
+      if (dt > 0.05) {
+        const currentAlt = activeVehicle.fullData.navigation.relative_altitude;
+        const da = currentAlt - lastAltRef.current;
+        const speed = da / dt;
+        // Dampen the vertical rate calculation to filter noise jitter
+        setClimbRate(prev => Math.abs(speed) < 0.05 ? 0 : prev * 0.7 + speed * 0.3);
+        lastAltRef.current = currentAlt;
+        lastAltTimeRef.current = now;
+      }
+    } else {
+      setClimbRate(0);
+    }
+  }, [telemetry.navigation.relative_altitude, activeVehicleId]);
+
   // Keep references for simulator target control state
   const simControlsRef = useRef<{
     [id: number]: {
@@ -159,8 +184,8 @@ function App() {
     
     // Auto-setup simulated vehicle structures
     const initVehicles = {
-      1: { id: 1, latitude: 24.7746, longitude: 121.0446, heading: 90, armed: false, mode: "HOLD", fullData: createEmptyTelemetry(1, 24.7746, 121.0446) },
-      2: { id: 2, latitude: 24.7760, longitude: 121.0465, heading: 180, armed: false, mode: "HOLD", fullData: createEmptyTelemetry(2, 24.7760, 121.0465) }
+      1: { id: 1, latitude: 24.7746, longitude: 121.0446, heading: 90, armed: false, mode: "HOLD", altitude: 0.0, fullData: createEmptyTelemetry(1, 24.7746, 121.0446) },
+      2: { id: 2, latitude: 24.7760, longitude: 121.0465, heading: 180, armed: false, mode: "HOLD", altitude: 0.0, fullData: createEmptyTelemetry(2, 24.7760, 121.0465) }
     };
     setVehicles(initVehicles);
     setActiveVehicleId(1);
@@ -365,6 +390,7 @@ function App() {
           heading: Math.round(state.yaw),
           armed: state.armed,
           mode: state.mode,
+          altitude: parseFloat(state.alt.toFixed(1)),
           fullData: {
             timestamp: Date.now(),
             vehicle_id: vid,
@@ -448,6 +474,7 @@ function App() {
                 heading: payload.data.pose.heading,
                 armed: payload.data.status.armed,
                 mode: payload.data.status.mode,
+                altitude: payload.data.navigation.relative_altitude,
                 fullData: payload.data
               }
             }));
@@ -682,9 +709,12 @@ function App() {
     const data: any = { type: newLinkType };
     if (newLinkType === "udp") {
       data.port = udpPort;
+      data.role = newLinkRole;
+      data.host = newLinkHost;
     } else if (newLinkType === "tcp") {
-      data.host = tcpHost;
+      data.host = newLinkHost;
       data.port = tcpPort;
+      data.role = newLinkRole;
     } else if (newLinkType === "serial") {
       data.port = serialPort;
       data.baud = serialBaud;
@@ -695,7 +725,7 @@ function App() {
       data
     }));
 
-    alert(`Requested Gateway to connect via ${newLinkType.toUpperCase()}...`);
+    alert(`Requested Gateway to connect via ${newLinkType.toUpperCase()} (${newLinkRole.toUpperCase()})...`);
   };
 
   // --- 4. WAYPOINT OPERATIONS ---
@@ -818,37 +848,6 @@ function App() {
             </div>
           </div>
 
-          {/* View Toggles (FLY, PLAN, SETUP) */}
-          <div className="view-toggles">
-            <button
-              onClick={() => {
-                setViewMode("fly");
-                setSelectedWpIndex(null);
-              }}
-              className={`view-toggle-btn ${viewMode === "fly" ? "active" : ""}`}
-            >
-              Fly
-            </button>
-            <button
-              onClick={() => {
-                setViewMode("plan");
-                setSelectedWpIndex(null);
-              }}
-              className={`view-toggle-btn ${viewMode === "plan" ? "active" : ""}`}
-            >
-              Plan
-            </button>
-            <button
-              onClick={() => {
-                setViewMode("setup");
-                setSelectedWpIndex(null);
-              }}
-              className={`view-toggle-btn ${viewMode === "setup" ? "active" : ""}`}
-            >
-              Setup
-            </button>
-          </div>
-
           {/* Active vehicle switcher and Settings deck */}
           <div className="flex items-center gap-4">
             
@@ -918,190 +917,337 @@ function App() {
 
             {/* Setup Connections Menu Trigger */}
             <button
-              onClick={() => setViewMode("setup")}
-              className={`btn btn-secondary flex items-center gap-1.5 ${viewMode === "setup" ? "text-sky-400 border-sky-500 bg-sky-500-10" : ""}`}
+              onClick={() => setShowConnectionSettings(prev => !prev)}
+              className={`btn btn-secondary flex items-center gap-1.5 ${showConnectionSettings ? "text-sky-400 border-sky-500 bg-sky-500-10" : ""}`}
               id="btn-settings-toggle"
             >
-              <Settings className="w-4 h-4" /> Link Setup
+              <Settings className="w-4 h-4" /> Comm Links
             </button>
           </div>
         </header>
 
-        {/* ================================================================= */}
-        {/* 2.1 FLY VIEW LAYOUT                                              */}
-        {/* ================================================================= */}
-        {viewMode === "fly" && (
-          <>
-            {/* Left QGC-style Guided Fly Tools sidebar */}
-            {activeVehicleId !== null && (
-              <div className="fly-tools-panel">
-                {/* Arm / Disarm Tool */}
-                <button
-                  onClick={() => initiateSliderAction("arm", telemetry.status.armed ? "Disarm Propulsion Motors" : "Arm Propulsion Motors", { armed: !telemetry.status.armed })}
-                  className={`fly-tool-btn ${telemetry.status.armed ? "danger" : ""}`}
-                  title="Arm/Disarm Motors"
-                >
-                  <Play className={`w-5 h-5 ${telemetry.status.armed ? "rotate-90 text-rose-500" : "text-emerald-400"}`} />
-                  <span className="fly-tool-btn-label">{telemetry.status.armed ? "Disarm" : "Arm"}</span>
-                </button>
+        {/* Floating Link Configuration Card (Top Right Dropdown) */}
+        {showConnectionSettings && (
+          <div className="dropdown-menu-card float-connection-panel" style={{ display: "block", position: "absolute", top: "70px", right: "20px", width: "320px", zIndex: 600 }}>
+            <h3 className="text-xs uppercase font-mono tracking-wider text-gray-300 border-b border-gray-800 pb-2 mb-2 flex justify-between items-center">
+              <span>⚙️ Link Configuration Deck</span>
+              <button onClick={() => setShowConnectionSettings(false)} className="text-gray-500 hover:text-white font-bold">&times;</button>
+            </h3>
 
-                {/* Guided Takeoff Tool */}
-                <button
-                  onClick={() => initiateSliderAction("takeoff", "Drone Takeoff", {})}
-                  disabled={telemetry.navigation.relative_altitude > 1.0}
-                  className="fly-tool-btn"
-                  title="Take Off"
-                >
-                  <Upload className="w-5 h-5 text-sky-400" />
-                  <span className="fly-tool-btn-label">Takeoff</span>
-                </button>
+            {/* Step A: WebSocket Link to Gateway */}
+            <div className="flex flex-col gap-2 bg-gray-900 p-2-5 rounded border border-gray-800 mb-3">
+              <span className="text-xxs font-mono text-gray-400 font-bold">1. PROXY WEBSOCKET:</span>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={wsUrl}
+                  onChange={(e) => setWsUrl(e.target.value)}
+                  disabled={isConnected}
+                  className="form-input flex-1"
+                />
+                {!isConnected ? (
+                  <button
+                    onClick={connectToGateway}
+                    disabled={isSimulating}
+                    className="btn btn-primary text-xs"
+                  >
+                    Connect
+                  </button>
+                ) : (
+                  <button
+                    onClick={disconnectFromGateway}
+                    className="btn btn-danger text-xs"
+                  >
+                    Disconnect
+                  </button>
+                )}
+              </div>
+            </div>
 
-                {/* Guided Land Tool */}
+            {/* Step B: Sim controls shortcut */}
+            <div className="flex flex-col gap-2 bg-gray-900 p-2-5 rounded border border-gray-800 mb-3">
+              <span className="text-xxs font-mono text-gray-400 font-bold">2. MULTI-VEHICLE SIMULATOR:</span>
+              {!isSimulating ? (
                 <button
-                  onClick={() => initiateSliderAction("land", "Drone Land", {})}
-                  disabled={telemetry.navigation.relative_altitude <= 1.0}
-                  className="fly-tool-btn"
-                  title="Land at current location"
+                  onClick={startLocalSimulator}
+                  disabled={isConnected}
+                  className="btn btn-success w-full text-xs"
                 >
-                  <Square className="w-5 h-5 text-rose-400" />
-                  <span className="fly-tool-btn-label">Land</span>
+                  Launch Local Sim
                 </button>
+              ) : (
+                <button
+                  onClick={stopLocalSimulator}
+                  className="btn btn-warning w-full text-xs"
+                >
+                  Kill Simulator
+                </button>
+              )}
+            </div>
 
-                {/* Guided RTL Tool */}
-                <button
-                  onClick={() => initiateSliderAction("rtl", "Return to Launch", {})}
-                  disabled={telemetry.navigation.relative_altitude <= 1.0}
-                  className="fly-tool-btn"
-                  title="Safety return to Home coordinates"
+            {/* Step C: Setup MAVLink Downstream Connections (TCP/UDP/Serial) */}
+            <div className="flex flex-col gap-2.5 bg-gray-900 p-2-5 rounded border border-gray-800 mb-3">
+              <span className="text-xxs font-mono text-gray-400 font-bold">3. SPAWN MAVLINK BRIDGE (DOWNSTREAM):</span>
+              
+              <div className="form-group">
+                <label className="form-label">Protocol Type</label>
+                <select
+                  value={newLinkType}
+                  onChange={(e) => setNewLinkType(e.target.value as any)}
+                  className="form-select"
                 >
-                  <RefreshCw className="w-5 h-5 text-yellow-500" />
-                  <span className="fly-tool-btn-label">RTL</span>
-                </button>
+                  <option value="udp">UDP Network</option>
+                  <option value="tcp">TCP Network</option>
+                  <option value="serial">Serial Telemetry Radio (COM)</option>
+                </select>
+              </div>
 
-                {/* Guided Pause Tool */}
-                <button
-                  onClick={() => initiateSliderAction("pause", "Hold Hovering", {})}
-                  disabled={telemetry.navigation.relative_altitude <= 1.0}
-                  className="fly-tool-btn"
-                  title="Pause flight and hover"
-                >
-                  <Square className="w-5 h-5 text-purple-400" />
-                  <span className="fly-tool-btn-label">Pause</span>
-                </button>
+              {/* Server/Client Role Option for UDP and TCP */}
+              {newLinkType !== "serial" && (
+                <div className="form-group">
+                  <label className="form-label">Connection Role</label>
+                  <select
+                    value={newLinkRole}
+                    onChange={(e) => setNewLinkRole(e.target.value as any)}
+                    className="form-select"
+                  >
+                    <option value="server">Server (Listen for incoming link)</option>
+                    <option value="client">Client (Connect to external target)</option>
+                  </select>
+                </div>
+              )}
+
+              {/* Host IP Address input */}
+              {newLinkType !== "serial" && (
+                <div className="form-group">
+                  <label className="form-label">Host IP Address</label>
+                  <input
+                    type="text"
+                    value={newLinkHost}
+                    onChange={(e) => setNewLinkHost(e.target.value)}
+                    placeholder={newLinkRole === "server" ? "0.0.0.0" : "127.0.0.1"}
+                    className="form-input"
+                  />
+                </div>
+              )}
+
+              {/* Contextual form inputs */}
+              {newLinkType === "udp" && (
+                <div className="form-group">
+                  <label className="form-label">UDP Port</label>
+                  <input
+                    type="number"
+                    value={udpPort}
+                    onChange={(e) => setUdpPort(Number(e.target.value))}
+                    className="form-input"
+                  />
+                </div>
+              )}
+
+              {newLinkType === "tcp" && (
+                <div className="form-group">
+                  <label className="form-label">TCP Port</label>
+                  <input
+                    type="number"
+                    value={tcpPort}
+                    onChange={(e) => setTcpPort(Number(e.target.value))}
+                    className="form-input"
+                  />
+                </div>
+              )}
+
+              {newLinkType === "serial" && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="form-group">
+                    <label className="form-label">Port Path</label>
+                    <input
+                      type="text"
+                      value={serialPort}
+                      onChange={(e) => setSerialPort(e.target.value)}
+                      className="form-input"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">Baud Rate</label>
+                    <select
+                      value={serialBaud}
+                      onChange={(e) => setSerialBaud(Number(e.target.value))}
+                      className="form-select font-mono"
+                    >
+                      <option value={9600}>9600 bps</option>
+                      <option value={57600}>57600 bps (Radio)</option>
+                      <option value={115200}>115200 bps (Pixhawk)</option>
+                      <option value={921600}>921600 bps (Companion)</option>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              <button
+                onClick={addDownstreamLink}
+                disabled={!isConnected}
+                className="btn btn-primary w-full text-xs flex items-center justify-center gap-1 mt-1"
+              >
+                <Plus className="w-4 h-4" /> Add Bridge Connection
+              </button>
+            </div>
+
+            {/* Active downstream links */}
+            {gatewayLinks.length > 0 && (
+              <div className="flex flex-col gap-1.5 font-mono text-xxs text-gray-400">
+                <span className="text-[9px] uppercase text-gray-500 font-bold">Active Gateway Links:</span>
+                {gatewayLinks.map((link, idx) => (
+                  <div key={idx} className="bg-black/40 px-2 py-1 rounded border border-gray-800">
+                    🟢 {link}
+                  </div>
+                ))}
               </div>
             )}
+          </div>
+        )}
 
-            {/* Left PFD Display overlay */}
-            {activeVehicleId !== null && (
-              <aside className="sidebar-left" style={{ top: "450px" }}>
-                <PFD
-                  roll={telemetry.pose.roll}
-                  pitch={telemetry.pose.pitch}
-                  heading={telemetry.pose.heading}
-                  altitude={telemetry.navigation.relative_altitude}
-                  airspeed={telemetry.navigation.airspeed}
-                  groundspeed={telemetry.navigation.groundspeed}
-                />
-              </aside>
-            )}
+        {/* Left QGC-style Guided Fly & Plan Tools sidebar */}
+        <div className="fly-tools-panel">
+          {/* View Toggle: Fly */}
+          <button
+            onClick={() => {
+              setViewMode("fly");
+              setSelectedWpIndex(null);
+            }}
+            className={`fly-tool-btn ${viewMode === "fly" ? "active" : ""}`}
+            title="Fly View Mode"
+          >
+            <Navigation className="w-5 h-5 text-sky-400 rotate-45" />
+            <span className="fly-tool-btn-label">Fly</span>
+          </button>
 
-            {/* Right Telemetry metrics and parameters */}
-            {activeVehicleId !== null && (
-              <aside className="sidebar-right">
-                {/* Quick HUD Metrics */}
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="hud-metric-card">
-                    <Battery className="w-6 h-6 text-yellow-500" />
-                    <div>
-                      <div className="hud-metric-title">Power</div>
-                      <div className="hud-metric-value">{telemetry.status.battery_percent}%</div>
-                      <div className="hud-metric-sub">{telemetry.status.battery_voltage.toFixed(1)} V</div>
-                    </div>
-                  </div>
+          {/* View Toggle: Plan */}
+          <button
+            onClick={() => {
+              setViewMode("plan");
+              setSelectedWpIndex(null);
+            }}
+            className={`fly-tool-btn ${viewMode === "plan" ? "active" : ""}`}
+            title="Mission Planning Mode"
+          >
+            <Layers className="w-5 h-5 text-purple-400" />
+            <span className="fly-tool-btn-label">Plan</span>
+          </button>
 
-                  <div className="hud-metric-card">
-                    <Compass className="w-6 h-6 text-sky-400" />
-                    <div>
-                      <div className="hud-metric-title">Heading</div>
-                      <div className="hud-metric-value">{telemetry.pose.heading}°</div>
-                      <div className="hud-metric-sub">YAW: {telemetry.pose.yaw.toFixed(0)}°</div>
-                    </div>
-                  </div>
+          {/* Divider if active and in fly view */}
+          {viewMode === "fly" && activeVehicleId !== null && (
+            <div style={{ height: "1px", background: "var(--border-color)", margin: "4px 0" }} />
+          )}
 
-                  <div className="hud-metric-card">
-                    <Navigation className="w-6 h-6 text-emerald-500" />
-                    <div>
-                      <div className="hud-metric-title">Altitude</div>
-                      <div className="hud-metric-value">{telemetry.navigation.relative_altitude.toFixed(1)} m</div>
-                      <div className="hud-metric-sub">Relative</div>
-                    </div>
-                  </div>
+          {/* Guided Actions (Only in Fly Mode and when vehicle is active) */}
+          {viewMode === "fly" && activeVehicleId !== null && (
+            <>
+              {/* Arm / Disarm Tool */}
+              <button
+                onClick={() => initiateSliderAction("arm", telemetry.status.armed ? "Disarm Propulsion Motors" : "Arm Propulsion Motors", { armed: !telemetry.status.armed })}
+                className={`fly-tool-btn ${telemetry.status.armed ? "danger" : ""}`}
+                title="Arm/Disarm Motors"
+              >
+                <Play className={`w-5 h-5 ${telemetry.status.armed ? "rotate-90 text-rose-500" : "text-emerald-400"}`} />
+                <span className="fly-tool-btn-label">{telemetry.status.armed ? "Disarm" : "Arm"}</span>
+              </button>
 
-                  <div className="hud-metric-card">
-                    <TrendingUp className="w-6 h-6 text-purple-400" />
-                    <div>
-                      <div className="hud-metric-title">Speed</div>
-                      <div className="hud-metric-value">{telemetry.navigation.groundspeed.toFixed(1)} m/s</div>
-                      <div className="hud-metric-sub">AIR: {telemetry.navigation.airspeed.toFixed(0)}</div>
-                    </div>
-                  </div>
-                </div>
+              {/* Guided Takeoff Tool */}
+              <button
+                onClick={() => initiateSliderAction("takeoff", "Drone Takeoff", {})}
+                disabled={telemetry.navigation.relative_altitude > 1.0}
+                className="fly-tool-btn"
+                title="Take Off"
+              >
+                <Upload className="w-5 h-5 text-sky-400" />
+                <span className="fly-tool-btn-label">Takeoff</span>
+              </button>
 
-                {/* Telemetry Details Panel */}
-                <div className="panel shadow">
-                  <h3 className="panel-header">
-                    🛸 Telemetry Parameters (Drone #{activeVehicleId})
-                  </h3>
-                  <div className="grid grid-cols-2 gap-y-2 text-xxs font-mono">
-                    <div className="text-gray-500">ARMED STATE:</div>
-                    <div className={telemetry.status.armed ? "text-emerald-400 font-bold" : "text-rose-500 font-bold"}>
-                      {telemetry.status.armed ? "ARMED" : "DISARMED"}
-                    </div>
+              {/* Guided Land Tool */}
+              <button
+                onClick={() => initiateSliderAction("land", "Drone Land", {})}
+                disabled={telemetry.navigation.relative_altitude <= 1.0}
+                className="fly-tool-btn"
+                title="Land at current location"
+              >
+                <Square className="w-5 h-5 text-rose-400" />
+                <span className="fly-tool-btn-label">Land</span>
+              </button>
 
-                    <div className="text-gray-500">FLIGHT MODE:</div>
-                    <div className="text-sky-400 font-bold">{telemetry.status.mode}</div>
+              {/* Guided RTL Tool */}
+              <button
+                onClick={() => initiateSliderAction("rtl", "Return to Launch", {})}
+                disabled={telemetry.navigation.relative_altitude <= 1.0}
+                className="fly-tool-btn"
+                title="Safety return to Home coordinates"
+              >
+                <RefreshCw className="w-5 h-5 text-yellow-500" />
+                <span className="fly-tool-btn-label">RTL</span>
+              </button>
 
-                    <div className="text-gray-500">GPS QUALITY:</div>
-                    <div>
-                      {telemetry.status.gps_satellites} Sats (Fix {telemetry.status.gps_fix_type})
-                    </div>
+              {/* Guided Pause Tool */}
+              <button
+                onClick={() => initiateSliderAction("pause", "Hold Hovering", {})}
+                disabled={telemetry.navigation.relative_altitude <= 1.0}
+                className="fly-tool-btn"
+                title="Pause flight and hover"
+              >
+                <Square className="w-5 h-5 text-purple-400" />
+                <span className="fly-tool-btn-label">Pause</span>
+              </button>
+            </>
+          )}
+        </div>
 
-                    <div className="text-gray-500">COORDINATES:</div>
-                    <div className="text-xxs text-gray-300">
-                      {telemetry.navigation.latitude.toFixed(6)}, <br />
-                      {telemetry.navigation.longitude.toFixed(6)}
-                    </div>
-                  </div>
-                </div>
+        {/* ================================================================= */}
+        {/* 2.1 FLY VIEW LAYOUT (HUD & BOTTOM TELEMETRY OVERLAYS)             */}
+        {/* ================================================================= */}
+        {viewMode === "fly" && activeVehicleId !== null && (
+          <>
+            {/* Top-Right HUD Circular PFD & Heading Display */}
+            <div className="pfd-hud-container">
+              <PFD
+                roll={telemetry.pose.roll}
+                pitch={telemetry.pose.pitch}
+                heading={telemetry.pose.heading}
+                altitude={telemetry.navigation.relative_altitude}
+                airspeed={telemetry.navigation.airspeed}
+                groundspeed={telemetry.navigation.groundspeed}
+              />
+            </div>
 
-                {/* Actions quick shortcuts */}
-                <div className="panel shadow">
-                  <h3 className="panel-header">
-                    ⚙️ Flight Control Shortcuts
-                  </h3>
-                  <div className="flex flex-col gap-2">
-                    <button
-                      onClick={() => initiateSliderAction("set_mode", "Switch to MISSION Flight mode", { mode: "MISSION" })}
-                      disabled={!telemetry.status.armed}
-                      className="btn btn-primary text-xs w-full py-2 disabled-opacity-40"
-                    >
-                      🚀 Start Mission Flight
-                    </button>
-                    <button
-                      onClick={() => initiateSliderAction("pause", "Hold Drone Position (Hover)", {})}
-                      className="btn btn-secondary text-xs w-full py-2"
-                    >
-                      ⏸️ Pause & Hover Here
-                    </button>
-                  </div>
-                </div>
-              </aside>
-            )}
+            {/* Bottom-Center Floating Telemetry Bar */}
+            <div className="bottom-telemetry-overlay">
+              <div className="telemetry-item">
+                <span className="telemetry-label">Alt (Rel)</span>
+                <span className="telemetry-value">{telemetry.navigation.relative_altitude.toFixed(1)} m</span>
+              </div>
+              <div className="telemetry-divider" />
+              <div className="telemetry-item">
+                <span className="telemetry-label">Climb Rate</span>
+                <span className="telemetry-value">{climbRate.toFixed(1)} m/s</span>
+              </div>
+              <div className="telemetry-divider" />
+              <div className="telemetry-item">
+                <span className="telemetry-label">Ground Speed</span>
+                <span className="telemetry-value">{telemetry.navigation.groundspeed.toFixed(1)} m/s</span>
+              </div>
+              <div className="telemetry-divider" />
+              <div className="telemetry-item">
+                <span className="telemetry-label">Airspeed</span>
+                <span className="telemetry-value">{telemetry.navigation.airspeed.toFixed(1)} m/s</span>
+              </div>
+              <div className="telemetry-divider" />
+              <div className="telemetry-item">
+                <span className="telemetry-label">Yaw (Heading)</span>
+                <span className="telemetry-value">{telemetry.pose.heading}°</span>
+              </div>
+            </div>
           </>
         )}
 
         {/* ================================================================= */}
-        {/* 2.2 PLAN VIEW LAYOUT                                              */}
+        {/* 2.2 PLAN VIEW LAYOUT (RIGHT PANEL CARD EDITORS)                  */}
         {/* ================================================================= */}
         {viewMode === "plan" && (
           <aside className="sidebar-right">
@@ -1282,172 +1428,7 @@ function App() {
         )}
 
         {/* ================================================================= */}
-        {/* 2.3 SETUP VIEW LAYOUT                                             */}
-        {/* ================================================================= */}
-        {viewMode === "setup" && (
-          <aside className="sidebar-right">
-            <div className="dropdown-menu-card" style={{ display: "block", position: "relative", width: "100%", top: 0, right: 0 }}>
-              <h3 className="text-xs uppercase font-mono tracking-wider text-gray-300 border-b border-gray-800 pb-2 mb-2">
-                ⚙️ Link Configuration Deck
-              </h3>
-
-              {/* Step A: WebSocket Link to Gateway */}
-              <div className="flex flex-col gap-2 bg-gray-900 p-2-5 rounded border border-gray-800 mb-3">
-                <span className="text-xxs font-mono text-gray-400 font-bold">1. PROXY WEBSOCKET:</span>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={wsUrl}
-                    onChange={(e) => setWsUrl(e.target.value)}
-                    disabled={isConnected}
-                    className="form-input flex-1"
-                  />
-                  {!isConnected ? (
-                    <button
-                      onClick={connectToGateway}
-                      disabled={isSimulating}
-                      className="btn btn-primary text-xs"
-                    >
-                      Connect
-                    </button>
-                  ) : (
-                    <button
-                      onClick={disconnectFromGateway}
-                      className="btn btn-danger text-xs"
-                    >
-                      Disconnect
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Step B: Sim controls shortcut */}
-              <div className="flex flex-col gap-2 bg-gray-900 p-2-5 rounded border border-gray-800 mb-3">
-                <span className="text-xxs font-mono text-gray-400 font-bold">2. MULTI-VEHICLE SIMULATOR:</span>
-                {!isSimulating ? (
-                  <button
-                    onClick={startLocalSimulator}
-                    disabled={isConnected}
-                    className="btn btn-success w-full text-xs"
-                  >
-                    Launch Local Sim
-                  </button>
-                ) : (
-                  <button
-                    onClick={stopLocalSimulator}
-                    className="btn btn-warning w-full text-xs"
-                  >
-                    Kill Simulator
-                  </button>
-                )}
-              </div>
-
-              {/* Step C: Setup MAVLink Downstream Connections (TCP/UDP/Serial) */}
-              <div className="flex flex-col gap-2.5 bg-gray-900 p-2-5 rounded border border-gray-800 mb-3">
-                <span className="text-xxs font-mono text-gray-400 font-bold">3. SPAWN MAVLINK BRIDGE (DOWNSTREAM):</span>
-                
-                <div className="form-group">
-                  <label className="form-label">Protocol Type</label>
-                  <select
-                    value={newLinkType}
-                    onChange={(e) => setNewLinkType(e.target.value as any)}
-                    className="form-select"
-                  >
-                    <option value="udp">UDP Port Listener (QGC SIH)</option>
-                    <option value="tcp">TCP Network Client</option>
-                    <option value="serial">Serial Telemetry Radio (COM)</option>
-                  </select>
-                </div>
-
-                {/* Contextual form inputs */}
-                {newLinkType === "udp" && (
-                  <div className="form-group">
-                    <label className="form-label">Listening UDP Port</label>
-                    <input
-                      type="number"
-                      value={udpPort}
-                      onChange={(e) => setUdpPort(Number(e.target.value))}
-                      className="form-input"
-                    />
-                  </div>
-                )}
-
-                {newLinkType === "tcp" && (
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="form-group">
-                      <label className="form-label">Host IP Address</label>
-                      <input
-                        type="text"
-                        value={tcpHost}
-                        onChange={(e) => setTcpHost(e.target.value)}
-                        className="form-input"
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label className="form-label">Port</label>
-                      <input
-                        type="number"
-                        value={tcpPort}
-                        onChange={(e) => setTcpPort(Number(e.target.value))}
-                        className="form-input"
-                      />
-                    </div>
-                  </div>
-                )}
-
-                {newLinkType === "serial" && (
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="form-group">
-                      <label className="form-label">Port Path</label>
-                      <input
-                        type="text"
-                        value={serialPort}
-                        onChange={(e) => setSerialPort(e.target.value)}
-                        className="form-input"
-                      />
-                    </div>
-                    <div className="form-group">
-                      <label className="form-label">Baud Rate</label>
-                      <select
-                        value={serialBaud}
-                        onChange={(e) => setSerialBaud(Number(e.target.value))}
-                        className="form-select font-mono"
-                      >
-                        <option value={9600}>9600 bps</option>
-                        <option value={57600}>57600 bps (Radio)</option>
-                        <option value={115200}>115200 bps (Pixhawk)</option>
-                        <option value={921600}>921600 bps (Companion)</option>
-                      </select>
-                    </div>
-                  </div>
-                )}
-
-                <button
-                  onClick={addDownstreamLink}
-                  disabled={!isConnected}
-                  className="btn btn-primary w-full text-xs flex items-center justify-center gap-1 mt-1"
-                >
-                  <Plus className="w-4 h-4" /> Add Bridge Connection
-                </button>
-              </div>
-
-              {/* Active downstream links */}
-              {gatewayLinks.length > 0 && (
-                <div className="flex flex-col gap-1.5 font-mono text-xxs text-gray-400">
-                  <span className="text-[9px] uppercase text-gray-500 font-bold">Active Gateway Links:</span>
-                  {gatewayLinks.map((link, idx) => (
-                    <div key={idx} className="bg-black/40 px-2 py-1 rounded border border-gray-800">
-                      🟢 {link}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </aside>
-        )}
-
-        {/* ================================================================= */}
-        {/* 2.4 SLIDE TO CONFIRM OVERLAY PANEL                                */}
+        {/* 2.3 SLIDE TO CONFIRM OVERLAY PANEL                                */}
         {/* ================================================================= */}
         {sliderAction && (
           <div className="slider-overlay-container">

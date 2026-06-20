@@ -909,3 +909,95 @@ body, html {
   border-left: 1px solid var(--border-color) !important;
   border-bottom: 1px solid var(--border-color) !important;
 }
+
+/* Floating PFD HUD Container */
+.pfd-hud-container {
+  position: absolute;
+  top: 76px;
+  right: 16px;
+  z-index: 400;
+  pointer-events: auto;
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+/* Bottom Telemetry Overlay Bar */
+.bottom-telemetry-overlay {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 400;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+  pointer-events: auto;
+}
+
+.telemetry-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.telemetry-label {
+  font-size: 8px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}
+
+.telemetry-value {
+  font-size: 13px;
+  font-weight: 700;
+  color: white;
+  font-family: var(--font-mono);
+  margin-top: 2px;
+}
+
+.telemetry-divider {
+  width: 1px;
+  height: 24px;
+  background-color: var(--border-color);
+}
+
+/* Floating connection setup menu card override */
+.float-connection-panel {
+  position: absolute !important;
+  top: 70px !important;
+  right: 20px !important;
+  width: 320px !important;
+  z-index: 600 !important;
+  background: rgba(15, 23, 42, 0.95) !important;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6) !important;
+  pointer-events: auto !important;
+}
+
+/* Dynamic follow leaflet popups custom styling */
+.leaflet-popup.drone-popup-follow .leaflet-popup-content-wrapper {
+  background: rgba(15, 23, 42, 0.85) !important;
+  color: #f3f4f6 !important;
+  border: 1px solid var(--border-color) !important;
+  border-radius: 6px !important;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5) !important;
+  padding: 0 !important;
+}
+
+.leaflet-popup.drone-popup-follow .leaflet-popup-tip {
+  background: rgba(15, 23, 42, 0.85) !important;
+  border-left: 1px solid var(--border-color) !important;
+  border-bottom: 1px solid var(--border-color) !important;
+}
