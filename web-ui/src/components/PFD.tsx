@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 
 interface PFDProps {
   roll: number;       // degrees
@@ -18,6 +18,62 @@ export const PFD: React.FC<PFDProps> = ({
   groundspeed
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Dragging state
+  const [position, setPosition] = useState({ x: window.innerWidth - 350, y: 52 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStart = useRef({ x: 0, y: 0 });
+  const posStart = useRef({ x: 0, y: 0 });
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest(".pfd-header")) {
+      setIsDragging(true);
+      dragStart.current = { x: e.clientX, y: e.clientY };
+      posStart.current = { ...position };
+      e.preventDefault();
+    }
+  };
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const dx = e.clientX - dragStart.current.x;
+      const dy = e.clientY - dragStart.current.y;
+      setPosition({
+        x: Math.max(10, Math.min(window.innerWidth - 100, posStart.current.x + dx)),
+        y: Math.max(10, Math.min(window.innerHeight - 100, posStart.current.y + dy)),
+      });
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDragging]);
+
+  // Keep inside window bounds on resize
+  useEffect(() => {
+    const handleResize = () => {
+      setPosition((prev) => {
+        const maxX = window.innerWidth - 200;
+        const maxY = window.innerHeight - 150;
+        return {
+          x: Math.max(10, Math.min(prev.x, maxX)),
+          y: Math.max(10, Math.min(prev.y, maxY)),
+        };
+      });
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -25,6 +81,15 @@ export const PFD: React.FC<PFDProps> = ({
 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+
+    // Adjust canvas resolution dynamically to match the container size
+    const container = containerRef.current;
+    if (container) {
+      const rect = container.getBoundingClientRect();
+      // Ensure height allows room for the 24px header and padding
+      canvas.width = Math.max(180, Math.round(rect.width - 10));
+      canvas.height = Math.max(120, Math.round(rect.height - 38));
+    }
 
     // Set dimensions
     const width = canvas.width;
@@ -369,17 +434,68 @@ export const PFD: React.FC<PFDProps> = ({
   }, [roll, pitch, heading, altitude, airspeed, groundspeed]);
 
   return (
-    <div className="flex flex-col items-center bg-gray-900 rounded-lg p-2 border border-gray-700 shadow-lg">
-      <div className="text-gray-400 font-mono text-xs uppercase tracking-wider mb-1">
-        Primary Flight Display
+    <div
+      ref={containerRef}
+      className="pfd-hud-container"
+      style={{
+        position: "absolute",
+        left: `${position.x}px`,
+        top: `${position.y}px`,
+        resize: "both",
+        overflow: "hidden",
+        minWidth: "240px",
+        minHeight: "200px",
+        width: "320px", // Initial default width
+        height: "280px", // Initial default height
+        display: "flex",
+        flexDirection: "column",
+        padding: "4px",
+        boxSizing: "border-box",
+        zIndex: 400
+      }}
+    >
+      <div 
+        className="pfd-header"
+        onMouseDown={handleMouseDown}
+        style={{
+          height: "24px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          backgroundColor: "#1f2937",
+          color: "#d1d5db",
+          paddingLeft: "8px",
+          paddingRight: "8px",
+          userSelect: "none",
+          cursor: "move",
+          fontFamily: "monospace",
+          fontSize: "11px",
+          fontWeight: "bold",
+          borderBottom: "1px solid #374151",
+          borderTopLeftRadius: "4px",
+          borderTopRightRadius: "4px"
+        }}
+      >
+        <span>PRIMARY FLIGHT DISPLAY</span>
+        <span style={{ opacity: 0.6 }}>⋮⋮</span>
       </div>
-      <canvas
-        ref={canvasRef}
-        width={320}
-        height={240}
-        className="rounded border border-gray-800 bg-black cursor-crosshair"
-        style={{ imageRendering: "pixelated", width: "320px", height: "240px" }}
-      />
+      <div style={{
+        flexGrow: 1,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "#000000",
+        borderBottomLeftRadius: "4px",
+        borderBottomRightRadius: "4px",
+        position: "relative",
+        overflow: "hidden",
+        marginTop: "4px"
+      }}>
+        <canvas
+          ref={canvasRef}
+          style={{ imageRendering: "pixelated", display: "block" }}
+        />
+      </div>
     </div>
   );
 };

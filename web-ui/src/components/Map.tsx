@@ -14,11 +14,12 @@ L.Icon.Default.mergeOptions({
 });
 
 export interface Waypoint {
-  command: "TAKEOFF" | "WAYPOINT" | "RTL";
+  command: "TAKEOFF" | "WAYPOINT" | "LAND" | "RTL" | "LOITER";
   latitude: number;
   longitude: number;
   altitude: number;
   hold_time?: number;
+  radius?: number;
 }
 
 export interface MapVehicle {
@@ -287,8 +288,10 @@ export const FlightMap: React.FC<MapProps> = ({
       const isSelected = index === selectedWpIndex;
       let color = "#8b5cf6";
       let label = `${index + 1}`;
-      if (wp.command === "TAKEOFF") { color = "#10b981"; label = "🚀"; }
-      else if (wp.command === "RTL") { color = "#ef4444"; label = "🏠"; }
+      if (wp.command === "TAKEOFF") { color = "#10b981"; label = "🛫"; }
+      else if (wp.command === "RTL") { color = "#ef4444"; label = "🏡"; }
+      else if (wp.command === "LAND") { color = "#f59e0b"; label = "🛬"; }
+      else if (wp.command === "LOITER") { color = "#ec4899"; label = "🔄"; }
 
       const wpIcon = L.divIcon({
         html: `

@@ -64,12 +64,14 @@ class Gateway:
             1: {
                 "lat": 24.7746, "lon": 121.0446, "alt": 0.0, "yaw": 90.0,
                 "pitch": 0.0, "roll": 0.0, "armed": False, "mode": "HOLD",
-                "battery_volts": 25.2, "target_wp_idx": 0, "waypoints": [], "flying": False
+                "battery_volts": 25.2, "target_wp_idx": 0, "waypoints": [], "flying": False,
+                "target_speed": 11.5
             },
             2: {
                 "lat": 24.7760, "lon": 121.0465, "alt": 0.0, "yaw": 180.0,
                 "pitch": 0.0, "roll": 0.0, "armed": False, "mode": "HOLD",
-                "battery_volts": 24.8, "target_wp_idx": 0, "waypoints": [], "flying": False
+                "battery_volts": 24.8, "target_wp_idx": 0, "waypoints": [], "flying": False,
+                "target_speed": 9.5
             }
         }
 
@@ -330,6 +332,9 @@ class Gateway:
                             state["mode"] = "TAKEOFF"
                             state["target_alt"] = cmd.get("altitude", 10.0)
                             print(f"[Mock #{vehicle_id}] Guided Takeoff requested. Target alt: {state['target_alt']}m")
+                        elif cmd_type == "change_speed":
+                            state["target_speed"] = cmd.get("speed", 10.0)
+                            print(f"[Mock #{vehicle_id}] Target speed set to: {state['target_speed']} m/s")
                         elif cmd_type == "land":
                             state["mode"] = "LAND"
                             print(f"[Mock #{vehicle_id}] Guided Land requested.")
@@ -415,7 +420,7 @@ class Gateway:
                     dist = math.sqrt(dx*dx + dy*dy)
                     
                     if dist > 0.00005:
-                        groundspeed = 11.5 if vid == 1 else 9.5
+                        groundspeed = state.get("target_speed", 11.5 if vid == 1 else 9.5)
                         airspeed = groundspeed
                         step_size = 0.00001
                         lat += (dy / dist) * step_size
@@ -447,7 +452,7 @@ class Gateway:
                     dist = math.sqrt(dx*dx + dy*dy)
                     
                     if dist > 0.00005:
-                        groundspeed = 11.5 if vid == 1 else 9.5
+                        groundspeed = state.get("target_speed", 11.5 if vid == 1 else 9.5)
                         airspeed = groundspeed
                         step_size = 0.00001
                         lat += (dy / dist) * step_size
@@ -490,7 +495,7 @@ class Gateway:
                     
                     if dist > 0.00005:
                         # Fly to orbit perimeter first
-                        groundspeed = 11.5 if vid == 1 else 9.5
+                        groundspeed = state.get("target_speed", 11.5 if vid == 1 else 9.5)
                         airspeed = groundspeed
                         step_size = 0.00001
                         lat += (dy / dist) * step_size
@@ -535,7 +540,7 @@ class Gateway:
                         dist = math.sqrt(dx*dx + dy*dy)
                         
                         if dist > 0.00005:
-                            groundspeed = 11.5 if vid == 1 else 9.5
+                            groundspeed = state.get("target_speed", 11.5 if vid == 1 else 9.5)
                             airspeed = groundspeed
                             step_size = 0.00001
                             lat += (dy / dist) * step_size
@@ -674,6 +679,8 @@ class Gateway:
                         self._handle_go_to(vehicle_id, task.get("latitude"), task.get("longitude"), task.get("altitude"))
                     elif task_type == "orbit":
                         self._handle_orbit(vehicle_id, task.get("latitude"), task.get("longitude"), task.get("altitude"), task.get("radius", 20.0))
+                    elif task_type == "change_speed":
+                        self._handle_change_speed(vehicle_id, task.get("speed", 10.0))
                     
             except queue.Empty:
                 pass
@@ -756,11 +763,16 @@ class Gateway:
                 lon = wp.get("longitude", 0.0)
                 alt = wp.get("altitude", 10.0)
                 hold_time = wp.get("hold_time", 0.0)
+                loiter_radius = wp.get("radius", 20.0) if cmd_str == "LOITER" else 0.0
                 
                 if cmd_str == "TAKEOFF":
                     cmd = mavutil.mavlink.MAV_CMD_NAV_TAKEOFF
                 elif cmd_str == "RTL":
                     cmd = mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH
+                elif cmd_str == "LAND":
+                    cmd = mavutil.mavlink.MAV_CMD_NAV_LAND
+                elif cmd_str == "LOITER":
+                    cmd = mavutil.mavlink.MAV_CMD_NAV_LOITER_UNLIM
                 else:
                     cmd = mavutil.mavlink.MAV_CMD_NAV_WAYPOINT
                     
@@ -771,7 +783,9 @@ class Gateway:
                     "current": 0,
                     "autocontinue": 1,
                     "p1": float(hold_time),
-                    "p2": 2.0, "p3": 0.0, "p4": 0.0,
+                    "p2": 2.0, 
+                    "p3": float(loiter_radius), 
+                    "p4": 0.0,
                     "x": int(lat * 1e7), "y": int(lon * 1e7), "z": float(alt)
                 })
                 
@@ -929,6 +943,17 @@ class Gateway:
         )
         print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, alt={alt}, radius={radius}")
 
+    def _handle_change_speed(self, vehicle_id: int, speed: float):
+        master = self.vehicle_masters.get(vehicle_id)
+        if not master:
+            return
+        # MAV_CMD_DO_CHANGE_SPEED: param1=1 (Groundspeed), param2=speed, param3=-1, param4=0
+        master.mav.command_long_send(
+            vehicle_id, 1, mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED, 0,
+            1.0, float(speed), -1.0, 0.0, 0.0, 0.0, 0.0
+        )
+        print(f"⚙️ MAVLink DO_CHANGE_SPEED command sent to Vehicle #{vehicle_id}: speed={speed} m/s")
+
     # --- STATIC HTTP SERVER & AUTO-SHUTDOWN UTILITIES ---
     def _run_http_server(self, directory: str, port: int):
         import http.server
@@ -1001,6 +1026,14 @@ class Gateway:
         await websocket.send(json.dumps({
             "type": "links_list",
             "data": list(self.active_links.keys())
+        }))
+        
+        # Send system info (such as mock mode status)
+        await websocket.send(json.dumps({
+            "type": "system_info",
+            "data": {
+                "use_mock": self.use_mock
+            }
         }))
         
         try:
@@ -1098,6 +1131,13 @@ class Gateway:
                             "vehicle_id": vehicle_id,
                             "mission_id": mission_id,
                             "waypoints": waypoints
+                        })
+                    elif action == "change_speed":
+                        speed = data.get("speed", 10.0)
+                        self.to_drone_queue.put({
+                            "type": "change_speed",
+                            "vehicle_id": vehicle_id,
+                            "speed": speed
                         })
                     else:
                         print(f"❓ Unknown action: {action}")

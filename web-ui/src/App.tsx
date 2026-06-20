@@ -70,6 +70,15 @@ function App() {
   });
   const [isConnected, setIsConnected] = useState(false);
   const [isSimulating, setIsSimulating] = useState(false);
+  const [useMock, setUseMock] = useState(false);
+
+  // ── Guided Action parameters ───────────────────────────────
+  const [guidedAltitude, setGuidedAltitude] = useState(10);
+  const [guidedRadius, setGuidedRadius] = useState(20);
+
+  // ── Active Flight controls ──────────────────────────────────
+  const [activeTargetSpeed, setActiveTargetSpeed] = useState(10);
+  const [activeTargetAlt, setActiveTargetAlt] = useState(30);
 
   // ── View mode: "fly" | "plan" ───────────────────────────────
   const [viewMode, setViewMode] = useState<"fly" | "plan">("fly");
@@ -175,6 +184,49 @@ function App() {
     };
   }, []);
 
+  // Sync targets on active vehicle selection
+  useEffect(() => {
+    if (activeVehicleId !== null && activeVehicle) {
+      setActiveTargetAlt(Math.max(2, Math.round(activeVehicle.fullData.navigation.relative_altitude)));
+      const gs = activeVehicle.fullData.navigation.groundspeed;
+      setActiveTargetSpeed(gs > 0.5 ? Math.round(gs) : 10);
+    }
+  }, [activeVehicleId]);
+
+  const applyActiveGuidedControls = () => {
+    if (activeVehicleId === null || !activeVehicle) return;
+    const vId = activeVehicleId;
+    
+    if (isSimulating) {
+      const state = simControlsRef.current[vId];
+      if (state) {
+        state.targetSpeed = activeTargetSpeed;
+        state.targetAlt = activeTargetAlt;
+        state.mode = "GO_TO";
+        state.targetLat = state.lat;
+        state.targetLon = state.lon;
+        state.flying = true;
+      }
+    } else if (isConnected && wsRef.current) {
+      wsRef.current.send(JSON.stringify({
+        action: "change_speed",
+        data: {
+          vehicle_id: vId,
+          speed: activeTargetSpeed
+        }
+      }));
+      wsRef.current.send(JSON.stringify({
+        action: "go_to",
+        data: {
+          vehicle_id: vId,
+          latitude: activeVehicle.latitude,
+          longitude: activeVehicle.longitude,
+          altitude: activeTargetAlt
+        }
+      }));
+    }
+  };
+
   // ── Vertical speed ────────────────────────────────────────────
   useEffect(() => {
     if (activeVehicleId !== null && activeVehicle) {
@@ -208,6 +260,7 @@ function App() {
       targetLat?: number;
       targetLon?: number;
       targetAlt?: number;
+      targetSpeed?: number;
       orbitRadius?: number;
       orbitAngle?: number;
     };
@@ -222,6 +275,7 @@ function App() {
       batteryVolts: 25.2,
       targetWpIndex: 0,
       flying: false,
+      targetSpeed: 11.5,
     },
     2: {
       lat: 24.776,
@@ -233,6 +287,7 @@ function App() {
       batteryVolts: 24.8,
       targetWpIndex: 0,
       flying: false,
+      targetSpeed: 9.5,
     },
   });
 
@@ -342,7 +397,7 @@ function App() {
           const dx = homeLon - state.lon;
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist > 0.00005) {
-            groundspeed = vid === 1 ? 11.5 : 9.5;
+            groundspeed = state.targetSpeed || (vid === 1 ? 11.5 : 9.5);
             airspeed = groundspeed;
             const step = 0.00001;
             state.lat += (dy / dist) * step;
@@ -365,7 +420,7 @@ function App() {
           const dx = targetLon - state.lon;
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist > 0.00005) {
-            groundspeed = 11.5;
+            groundspeed = state.targetSpeed || 11.5;
             airspeed = groundspeed;
             const step = 0.00001;
             state.lat += (dy / dist) * step;
@@ -394,7 +449,7 @@ function App() {
           const dx = targetLonOnEdge - state.lon;
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist > 0.00005) {
-            groundspeed = 11.5;
+            groundspeed = state.targetSpeed || 11.5;
             airspeed = groundspeed;
             const step = 0.00001;
             state.lat += (dy / dist) * step;
@@ -435,7 +490,7 @@ function App() {
           const dx = targetLon - state.lon;
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist > 0.00005) {
-            groundspeed = vid === 1 ? 11.5 : 9.5;
+            groundspeed = state.targetSpeed || (vid === 1 ? 11.5 : 9.5);
             airspeed = groundspeed;
             const step = 0.00001;
             state.lat += (dy / dist) * step;
@@ -565,6 +620,8 @@ function App() {
             setMissionStatuses((prev) => ({ ...prev, [vId]: payload.data }));
           } else if (payload.type === "links_list") {
             setGatewayLinks(payload.data || []);
+          } else if (payload.type === "system_info") {
+            setUseMock(payload.data.use_mock || false);
           }
         } catch (err) {
           console.warn("[WS] Error decoding message:", err);
@@ -572,6 +629,7 @@ function App() {
       };
       wsRef.current.onclose = () => {
         setIsConnected(false);
+        setUseMock(false);
         wsRef.current = null;
         setVehicles({});
         setActiveVehicleId(null);
@@ -590,6 +648,8 @@ function App() {
   // 3. SLIDE TO CONFIRM ACTIONS
   // ═════════════════════════════════════════════════════════════
   const initiateSliderAction = (type: string, label: string, data?: any) => {
+    setGuidedAltitude(type === "takeoff" ? 10 : 30); // Default takeoff to 10m, loiter/go_to to 30m
+    setGuidedRadius(20);
     setSliderAction({ type, label, data });
     setSliderValue(0);
   };
@@ -601,7 +661,12 @@ function App() {
   }) => {
     if (activeVehicleId === null) return;
     const vId = activeVehicleId;
-    const { type, data } = action;
+    const { type } = action;
+    const data = {
+      ...(action.data || {}),
+      altitude: guidedAltitude,
+      radius: guidedRadius,
+    };
 
     if (isSimulating) {
       const state = simControlsRef.current[vId];
@@ -610,7 +675,7 @@ function App() {
           state.armed = data.armed;
           if (!data.armed) { state.flying = false; state.alt = 0.0; }
         } else if (type === "takeoff") {
-          state.armed = true; state.flying = true; state.mode = "TAKEOFF"; state.targetAlt = 10.0;
+          state.armed = true; state.flying = true; state.mode = "TAKEOFF"; state.targetAlt = data.altitude || 10.0;
         } else if (type === "land") {
           state.mode = "LAND";
         } else if (type === "rtl") {
@@ -620,12 +685,14 @@ function App() {
         } else if (type === "go_to") {
           state.mode = "GO_TO"; state.flying = true;
           state.targetLat = data.latitude; state.targetLon = data.longitude;
-          state.targetAlt = state.alt > 1.0 ? state.alt : 10.0;
+          state.targetAlt = data.altitude || 10.0;
         } else if (type === "orbit") {
           state.mode = "ORBIT"; state.flying = true;
           state.targetLat = data.latitude; state.targetLon = data.longitude;
-          state.targetAlt = state.alt > 1.0 ? state.alt : 10.0;
-          state.orbitRadius = 20.0; state.orbitAngle = 0.0;
+          state.targetAlt = data.altitude || 10.0;
+          state.orbitRadius = data.radius || 20.0; state.orbitAngle = 0.0;
+        } else if (type === "change_speed") {
+          state.targetSpeed = data.speed;
         } else if (type === "set_mode") {
           state.mode = data.mode;
           if (data.mode === "MISSION" && state.armed) {
@@ -639,12 +706,13 @@ function App() {
     if (!isConnected || !wsRef.current) { alert("Gateway not connected!"); return; }
     const actionMap: Record<string, any> = {
       arm: { action: "arm", data: { vehicle_id: vId, armed: data.armed } },
-      takeoff: { action: "takeoff", data: { vehicle_id: vId, altitude: 10.0 } },
+      takeoff: { action: "takeoff", data: { vehicle_id: vId, altitude: data.altitude || 10.0 } },
       land: { action: "land", data: { vehicle_id: vId } },
       rtl: { action: "rtl", data: { vehicle_id: vId } },
       pause: { action: "pause", data: { vehicle_id: vId } },
-      go_to: { action: "go_to", data: { vehicle_id: vId, latitude: data.latitude, longitude: data.longitude, altitude: telemetry.navigation.relative_altitude > 1.0 ? telemetry.navigation.relative_altitude : 10.0 } },
-      orbit: { action: "orbit", data: { vehicle_id: vId, latitude: data.latitude, longitude: data.longitude, altitude: telemetry.navigation.relative_altitude > 1.0 ? telemetry.navigation.relative_altitude : 10.0, radius: 20.0 } },
+      go_to: { action: "go_to", data: { vehicle_id: vId, latitude: data.latitude, longitude: data.longitude, altitude: data.altitude || 10.0 } },
+      orbit: { action: "orbit", data: { vehicle_id: vId, latitude: data.latitude, longitude: data.longitude, altitude: data.altitude || 10.0, radius: data.radius || 20.0 } },
+      change_speed: { action: "change_speed", data: { vehicle_id: vId, speed: data.speed } },
       set_mode: { action: "set_mode", data: { vehicle_id: vId, mode: data.mode } },
     };
     if (actionMap[type]) wsRef.current.send(JSON.stringify(actionMap[type]));
@@ -938,18 +1006,20 @@ function App() {
             </div>
 
             {/* 2. Local Sim */}
-            <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid var(--border-color)", borderRadius: 6, padding: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 8, textTransform: "uppercase", color: "var(--text-muted)", fontWeight: 700 }}>2. Multi-Vehicle Simulator</span>
-              {!isSimulating ? (
-                <button onClick={startLocalSimulator} disabled={isConnected} className="btn btn-success w-full" style={{ fontSize: 10 }}>
-                  ▶ Launch Local Sim (2 UAVs)
-                </button>
-              ) : (
-                <button onClick={stopLocalSimulator} className="btn btn-danger w-full" style={{ fontSize: 10 }}>
-                  ■ Stop Simulator
-                </button>
-              )}
-            </div>
+            {(!isConnected || useMock) && (
+              <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid var(--border-color)", borderRadius: 6, padding: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 8, textTransform: "uppercase", color: "var(--text-muted)", fontWeight: 700 }}>2. Multi-Vehicle Simulator</span>
+                {!isSimulating ? (
+                  <button onClick={startLocalSimulator} disabled={isConnected} className="btn btn-success w-full" style={{ fontSize: 10 }}>
+                    ▶ Launch Local Sim (2 UAVs)
+                  </button>
+                ) : (
+                  <button onClick={stopLocalSimulator} className="btn btn-danger w-full" style={{ fontSize: 10 }}>
+                    ■ Stop Simulator
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* 3. MAVLink Bridge */}
             <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid var(--border-color)", borderRadius: 6, padding: 8, display: "flex", flexDirection: "column", gap: 6 }}>
@@ -1143,16 +1213,14 @@ function App() {
         {viewMode === "fly" && activeVehicleId !== null && (
           <>
             {/* Top-right PFD */}
-            <div className="pfd-hud-container">
-              <PFD
-                roll={telemetry.pose.roll}
-                pitch={telemetry.pose.pitch}
-                heading={telemetry.pose.heading}
-                altitude={telemetry.navigation.relative_altitude}
-                airspeed={telemetry.navigation.airspeed}
-                groundspeed={telemetry.navigation.groundspeed}
-              />
-            </div>
+            <PFD
+              roll={telemetry.pose.roll}
+              pitch={telemetry.pose.pitch}
+              heading={telemetry.pose.heading}
+              altitude={telemetry.navigation.relative_altitude}
+              airspeed={telemetry.navigation.airspeed}
+              groundspeed={telemetry.navigation.groundspeed}
+            />
 
             {/* Bottom telemetry bar */}
             <div className="bottom-telemetry-overlay">
@@ -1181,6 +1249,66 @@ function App() {
                 <span className="telemetry-value">{telemetry.pose.heading}°</span>
               </div>
             </div>
+
+            {/* Active Guided Controls Floating Panel */}
+            {activeVehicle && activeVehicle.armed && (
+              <div 
+                className="panel shadow"
+                style={{
+                  position: "absolute",
+                  right: "12px",
+                  top: "340px",
+                  width: "180px",
+                  zIndex: 390,
+                  background: "var(--bg-panel)",
+                  backdropFilter: "var(--blur-md)",
+                  border: "1px solid var(--border-color)",
+                  borderRadius: "var(--radius-md)",
+                  padding: "10px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "10px"
+                }}
+              >
+                <h4 style={{ margin: 0, fontSize: "10px", fontFamily: "monospace", textTransform: "uppercase", color: "var(--color-primary)", fontWeight: 700, borderBottom: "1px solid var(--border-color)", paddingBottom: "4px" }}>
+                  ⚡ Guided Tuning
+                </h4>
+                
+                <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                  <label style={{ fontSize: "9px", fontFamily: "monospace", color: "var(--text-muted)", display: "flex", justifyContent: "space-between" }}>
+                    <span>Target Speed</span>
+                    <span style={{ color: "#fff" }}>{activeTargetSpeed} m/s</span>
+                  </label>
+                  <input 
+                    type="range" min="1" max="20" step="0.5" 
+                    value={activeTargetSpeed} 
+                    onChange={(e) => setActiveTargetSpeed(Number(e.target.value))} 
+                    style={{ width: "100%", accentColor: "var(--color-primary)" }} 
+                  />
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                  <label style={{ fontSize: "9px", fontFamily: "monospace", color: "var(--text-muted)", display: "flex", justifyContent: "space-between" }}>
+                    <span>Target Alt</span>
+                    <span style={{ color: "#fff" }}>{activeTargetAlt} m</span>
+                  </label>
+                  <input 
+                    type="range" min="2" max="100" step="1" 
+                    value={activeTargetAlt} 
+                    onChange={(e) => setActiveTargetAlt(Number(e.target.value))} 
+                    style={{ width: "100%", accentColor: "var(--color-primary)" }} 
+                  />
+                </div>
+
+                <button 
+                  onClick={applyActiveGuidedControls} 
+                  className="btn btn-primary w-full py-1 text-xxs"
+                  style={{ fontWeight: 700 }}
+                >
+                  Apply Changes
+                </button>
+              </div>
+            )}
           </>
         )}
 
@@ -1202,12 +1330,14 @@ function App() {
                       </span>
                     </div>
 
-                    <div className="form-group">
+                     <div className="form-group">
                       <label className="form-label">Command</label>
                       <select value={selectedWp.command} onChange={(e) => updateSelectedWpField("command", e.target.value)} className="form-select">
-                        <option value="TAKEOFF">TAKEOFF 🚀</option>
+                        <option value="TAKEOFF">TAKEOFF 🛫</option>
                         <option value="WAYPOINT">WAYPOINT 📍</option>
-                        <option value="RTL">RTL 🏠</option>
+                        <option value="LOITER">LOITER (ORBIT) 🔄</option>
+                        <option value="LAND">LAND 🛬</option>
+                        <option value="RTL">RTL 🏡</option>
                       </select>
                     </div>
 
@@ -1236,11 +1366,20 @@ function App() {
                       <div className="form-group">
                         <label className="form-label">Hold (s)</label>
                         <input type="number" value={selectedWp.hold_time || 0}
-                          disabled={selectedWp.command !== "WAYPOINT"}
+                          disabled={selectedWp.command !== "WAYPOINT" && selectedWp.command !== "LOITER"}
                           onChange={(e) => updateSelectedWpField("hold_time", parseInt(e.target.value) || 0)}
                           className="form-input" />
                       </div>
                     </div>
+
+                    {selectedWp.command === "LOITER" && (
+                      <div className="form-group">
+                        <label className="form-label">Loiter Radius (m)</label>
+                        <input type="number" value={selectedWp.radius || 20}
+                          onChange={(e) => updateSelectedWpField("radius", parseFloat(e.target.value) || 0)}
+                          className="form-input" />
+                      </div>
+                    )}
 
                     <div className="flex gap-2 mt-auto">
                       <button onClick={() => moveSelectedWp("up")} disabled={selectedWpIndex === 0} className="flex-1 btn btn-secondary text-xxs py-2">
@@ -1272,7 +1411,9 @@ function App() {
                 <h3 className="panel-header">🛫 Mission Sync</h3>
                 <div className="flex flex-col gap-2">
                   <div className="flex gap-2 w-full">
-                    <button onClick={loadSampleMission} className="btn btn-secondary flex-1 text-xxs">Sample</button>
+                    {(!isConnected || useMock || isSimulating) && (
+                      <button onClick={loadSampleMission} className="btn btn-secondary flex-1 text-xxs">Sample</button>
+                    )}
                     <button onClick={clearWaypoints} className="btn btn-outline-danger flex-1 text-xxs">Clear Map</button>
                   </div>
                   <button onClick={sendMissionUpload} disabled={waypoints.length === 0} className="btn btn-primary w-full py-2 text-xs">
@@ -1313,8 +1454,39 @@ function App() {
         {/* SLIDE TO CONFIRM OVERLAY                          */}
         {/* ══════════════════════════════════════════════════ */}
         {sliderAction && (
-          <div className="slider-overlay-container">
-            <h4 className="slider-title">Confirm: {sliderAction.label}</h4>
+          <div className="slider-overlay-container" style={{ padding: "16px", minWidth: "260px" }}>
+            <h4 className="slider-title" style={{ marginBottom: "12px" }}>Confirm: {sliderAction.label}</h4>
+            
+            {/* Takeoff Altitude Slider */}
+            {sliderAction.type === "takeoff" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, width: "100%", marginBottom: 12, textAlign: "left" }}>
+                <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "monospace" }}>Takeoff Altitude: {guidedAltitude} m</span>
+                <input type="range" min="2" max="50" step="1" value={guidedAltitude} onChange={(e) => setGuidedAltitude(Number(e.target.value))} style={{ width: "100%", accentColor: "var(--color-primary)" }} />
+              </div>
+            )}
+
+            {/* Go-To Altitude Slider */}
+            {sliderAction.type === "go_to" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, width: "100%", marginBottom: 12, textAlign: "left" }}>
+                <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "monospace" }}>Target Altitude: {guidedAltitude} m</span>
+                <input type="range" min="2" max="100" step="1" value={guidedAltitude} onChange={(e) => setGuidedAltitude(Number(e.target.value))} style={{ width: "100%", accentColor: "var(--color-primary)" }} />
+              </div>
+            )}
+
+            {/* Orbit / Loiter Radius & Altitude Sliders */}
+            {sliderAction.type === "orbit" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%", marginBottom: 16, textAlign: "left" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "monospace" }}>Orbit Radius: {guidedRadius} m</span>
+                  <input type="range" min="5" max="100" step="1" value={guidedRadius} onChange={(e) => setGuidedRadius(Number(e.target.value))} style={{ width: "100%", accentColor: "var(--color-primary)" }} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "monospace" }}>Orbit Altitude: {guidedAltitude} m</span>
+                  <input type="range" min="2" max="100" step="1" value={guidedAltitude} onChange={(e) => setGuidedAltitude(Number(e.target.value))} style={{ width: "100%", accentColor: "var(--color-primary)" }} />
+                </div>
+              </div>
+            )}
+
             <div className="slide-confirm-wrapper">
               <div className="slide-confirm-text">Slide to Confirm</div>
               <div className="slide-confirm-fill" style={{ width: `${sliderValue}%` }} />
