@@ -23,6 +23,16 @@ class Gateway:
         self.ws_port = ws_port
         self.use_mock = use_mock or not MAVLINK_AVAILABLE
         
+        # UI & Auto-shutdown settings
+        self.serve_ui = False
+        self.ui_dir = ""
+        self.ui_port = 8082
+        self.open_browser = False
+        self.auto_shutdown = False
+        self.shutdown_timeout = 5.0
+        self.has_connected = False
+        self.shutdown_task = None
+        
         # Connection records
         # connection_string -> Master object
         self.active_links: Dict[str, Any] = {}
@@ -76,6 +86,27 @@ class Gateway:
             self.add_connection(default_conn)
             
         self.threads.append(threading.Thread(target=self._mission_worker_loop, daemon=True))
+        
+        # Start UI Static Server if enabled
+        if self.serve_ui:
+            import os
+            if os.path.exists(self.ui_dir):
+                http_thread = threading.Thread(
+                    target=self._run_http_server,
+                    args=(self.ui_dir, self.ui_port),
+                    daemon=True
+                )
+                http_thread.start()
+                self.threads.append(http_thread)
+                
+                if self.open_browser:
+                    threading.Thread(
+                        target=self._open_browser_delayed,
+                        args=(f"http://127.0.0.1:{self.ui_port}",),
+                        daemon=True
+                    ).start()
+            else:
+                print(f"❌ Cannot serve UI: Directory '{self.ui_dir}' does not exist.")
         
         for t in self.threads:
             if not t.is_alive():
@@ -898,6 +929,42 @@ class Gateway:
         )
         print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, alt={alt}, radius={radius}")
 
+    # --- STATIC HTTP SERVER & AUTO-SHUTDOWN UTILITIES ---
+    def _run_http_server(self, directory: str, port: int):
+        import http.server
+        import socketserver
+        
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=directory, **kwargs)
+            def log_message(self, format, *args):
+                pass # Suppress standard HTTP logs to keep stdout clean
+                
+        socketserver.TCPServer.allow_reuse_address = True
+        try:
+            with socketserver.TCPServer(("127.0.0.1", port), Handler) as httpd:
+                print(f"📁 Web UI static server serving at http://127.0.0.1:{port}")
+                httpd.serve_forever()
+        except Exception as e:
+            print(f"⚠️ HTTP static server failed to start on port {port}: {e}")
+
+    def _open_browser_delayed(self, url: str):
+        time.sleep(1.0)
+        import webbrowser
+        print(f"🌐 Opening default web browser to {url}...")
+        webbrowser.open(url)
+
+    async def _auto_shutdown_countdown(self):
+        try:
+            await asyncio.sleep(self.shutdown_timeout)
+            if len(self.client_sockets) == 0:
+                print(f"⏳ Auto-shutdown timer expired ({self.shutdown_timeout}s). No clients connected. Shutting down Gateway...")
+                self.running = False
+                import os
+                os._exit(0)
+        except asyncio.CancelledError:
+            pass
+
     # --- WEBSOCKET COMMUNICATION (ASYNCIO) ---
     async def _ws_broadcast_loop(self):
         """Pops telemetry/status messages and broadcasts to all Web UI clients."""
@@ -923,7 +990,13 @@ class Gateway:
     async def _ws_handler(self, websocket):
         print(f"🔌 Web UI Client connected: {websocket.remote_address}")
         self.client_sockets.add(websocket)
+        self.has_connected = True
         
+        # Cancel any pending shutdown countdown if a new client connects
+        if self.shutdown_task and not self.shutdown_task.done():
+            self.shutdown_task.cancel()
+            print("🕒 Auto-shutdown countdown cancelled (client reconnected).")
+            
         # Immediately notify the list of active links
         await websocket.send(json.dumps({
             "type": "links_list",
@@ -1036,6 +1109,11 @@ class Gateway:
             print(f"🔌 Web UI Client disconnected: {websocket.remote_address}")
             if websocket in self.client_sockets:
                 self.client_sockets.remove(websocket)
+            
+            # If auto-shutdown is enabled and no active sockets are left, trigger shutdown timer
+            if self.auto_shutdown and len(self.client_sockets) == 0:
+                print(f"🕒 No clients connected. Initiating {self.shutdown_timeout}s auto-shutdown countdown...")
+                self.shutdown_task = asyncio.create_task(self._auto_shutdown_countdown())
 
     async def _ws_server_main(self):
         import websockets
@@ -1044,16 +1122,39 @@ class Gateway:
             await self._ws_broadcast_loop()
 
 if __name__ == "__main__":
+    import os
     parser = argparse.ArgumentParser(description="HGCS Multi-Vehicle Gateway")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="WebSocket host")
     parser.add_argument("--port", type=int, default=8080, help="WebSocket port")
     parser.add_argument("--mock", action="store_true", help="Force multi-drone mock telemetry")
     
+    # Static serving arguments
+    parser.add_argument("--no-serve", dest="serve", action="store_false", help="Do not serve web UI static files")
+    parser.add_argument("--serve-dir", type=str, default="", help="Path to static UI directory (default: relative to gateway file ../web-ui/dist)")
+    parser.add_argument("--serve-port", type=int, default=8082, help="Port to serve web UI on")
+    parser.add_argument("--no-open", dest="open", action="store_false", help="Do not automatically open default browser")
+    parser.add_argument("--no-shutdown", dest="auto_shutdown", action="store_false", help="Do not auto-shutdown when web UI is closed")
+    parser.add_argument("--shutdown-timeout", type=float, default=5.0, help="Seconds to wait before shutting down after client disconnects")
+    parser.set_defaults(serve=True, open=True, auto_shutdown=True)
+    
     args = parser.parse_args()
+    
+    # Resolve default UI directory relative to this script
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    default_ui_dir = os.path.abspath(os.path.join(base_dir, "../web-ui/dist"))
+    ui_dir = args.serve_dir if args.serve_dir else default_ui_dir
     
     gateway = Gateway(
         ws_host=args.host,
         ws_port=args.port,
         use_mock=args.mock
     )
+    
+    gateway.serve_ui = args.serve
+    gateway.ui_dir = ui_dir
+    gateway.ui_port = args.serve_port
+    gateway.open_browser = args.open
+    gateway.auto_shutdown = args.auto_shutdown
+    gateway.shutdown_timeout = args.shutdown_timeout
+    
     gateway.start()

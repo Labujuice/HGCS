@@ -56,7 +56,18 @@ interface VehicleTelemetry {
 
 function App() {
   // ── Connection states ────────────────────────────────────────
-  const [wsUrl, setWsUrl] = useState("ws://127.0.0.1:8080");
+  const [wsUrl, setWsUrl] = useState(() => {
+    try {
+      const loc = window.location;
+      if (!loc.hostname || loc.hostname === "localhost") {
+        return "ws://127.0.0.1:8080";
+      }
+      const protocol = loc.protocol === "https:" ? "wss:" : "ws:";
+      return `${protocol}//${loc.hostname}:8080`;
+    } catch {
+      return "ws://127.0.0.1:8080";
+    }
+  });
   const [isConnected, setIsConnected] = useState(false);
   const [isSimulating, setIsSimulating] = useState(false);
 
@@ -152,6 +163,17 @@ function App() {
   useEffect(() => {
     wpsRef.current = vehicleWaypoints;
   }, [vehicleWaypoints]);
+
+  // Auto-connect to websocket gateway on mount
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      connectToGateway();
+    }, 100);
+    return () => {
+      clearTimeout(timer);
+      wsRef.current?.close();
+    };
+  }, []);
 
   // ── Vertical speed ────────────────────────────────────────────
   useEffect(() => {
