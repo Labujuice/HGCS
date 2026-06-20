@@ -7,7 +7,7 @@ import sys
 import argparse
 import threading
 import queue
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Set
 
 # Try to import pymavlink and serial
 try:
@@ -18,77 +18,68 @@ except ImportError:
     MAVLINK_AVAILABLE = False
 
 class Gateway:
-    def __init__(self, connection_string: str, ws_host: str, ws_port: int, use_mock: bool):
-        self.connection_string = connection_string
+    def __init__(self, ws_host: str, ws_port: int, use_mock: bool):
         self.ws_host = ws_host
         self.ws_port = ws_port
         self.use_mock = use_mock or not MAVLINK_AVAILABLE
         
-        # Connection state
-        self.master = None
-        self.vehicle_id = 1
+        # Connection records
+        # connection_string -> Master object
+        self.active_links: Dict[str, Any] = {}
+        # vehicle_id -> Master object
+        self.vehicle_masters: Dict[int, Any] = {}
+        # vehicle_id -> connection_string
+        self.vehicle_link_mapping: Dict[int, str] = {}
+        
         self.client_sockets = set()
         
         # Threading queues
         self.to_ws_queue = queue.Queue()
         self.to_drone_queue = queue.Queue()
         
-        # Telemetry Cache
-        self.telemetry = {
-            "timestamp": 0,
-            "vehicle_id": 1,
-            "status": {
-                "armed": False,
-                "mode": "DISCONNECTED",
-                "battery_percent": 0,
-                "battery_voltage": 0.0,
-                "gps_satellites": 0,
-                "gps_fix_type": 0
-            },
-            "pose": {
-                "roll": 0.0,
-                "pitch": 0.0,
-                "yaw": 0.0,
-                "heading": 0
-            },
-            "navigation": {
-                "latitude": 24.7746,
-                "longitude": 121.0446,
-                "relative_altitude": 0.0,
-                "airspeed": 0.0,
-                "groundspeed": 0.0
-            }
-        }
-        
-        # Lock for telemetry access
+        # Telemetries for multiple vehicles: vehicle_id -> telemetry dict
+        self.telemetries: Dict[int, Dict[str, Any]] = {}
         self.telemetry_lock = threading.Lock()
         
-        # Mission state
-        self.mission_status = {
-            "mission_id": "",
-            "state": "IDLE",
-            "progress": 0,
-            "message": ""
-        }
+        # Mission status: vehicle_id -> mission status dict
+        self.mission_statuses: Dict[int, Dict[str, Any]] = {}
         self.mission_lock = threading.Lock()
         
-        # Active threads
+        # Active threads list
         self.threads = []
         self.running = True
+        
+        # For Mock Multi-Drone Simulation
+        self.mock_vehicles_state = {
+            1: {
+                "lat": 24.7746, "lon": 121.0446, "alt": 0.0, "yaw": 90.0,
+                "pitch": 0.0, "roll": 0.0, "armed": False, "mode": "HOLD",
+                "battery_volts": 25.2, "target_wp_idx": 0, "waypoints": [], "flying": False
+            },
+            2: {
+                "lat": 24.7760, "lon": 121.0465, "alt": 0.0, "yaw": 180.0,
+                "pitch": 0.0, "roll": 0.0, "armed": False, "mode": "HOLD",
+                "battery_volts": 24.8, "target_wp_idx": 0, "waypoints": [], "flying": False
+            }
+        }
 
     def start(self):
-        print(f"🚀 Starting HGCS Gateway...")
+        print(f"🚀 Starting HGCS Multi-Vehicle Gateway...")
+        
         if self.use_mock:
-            print("⚠️ Running in MOCK mode (No MAVLink physical connection).")
+            print("⚠️ Running in MOCK mode (Simulating 2 Vehicles dynamically).")
             self.threads.append(threading.Thread(target=self._mock_telemetry_loop, daemon=True))
         else:
-            print(f"🔌 Connecting to MAVLink device: {self.connection_string}")
-            self.threads.append(threading.Thread(target=self._mavlink_loop, daemon=True))
+            # We will start default SITL MAVLink UDP connection
+            default_conn = "udp:127.0.0.1:14540"
+            print(f"🔌 Initializing default MAVLink connection on: {default_conn}")
+            self.add_connection(default_conn)
             
         self.threads.append(threading.Thread(target=self._mission_worker_loop, daemon=True))
         
         for t in self.threads:
-            t.start()
+            if not t.is_alive():
+                t.start()
             
         # Start WebSocket server in main thread (asyncio)
         try:
@@ -98,200 +89,36 @@ class Gateway:
         finally:
             self.running = False
 
-    # --- MOCK SIMULATOR ---
-    def _mock_telemetry_loop(self):
-        """Generates realistic telemetry at 20Hz."""
-        tick = 0
-        lat, lon = 24.7746, 121.0446
-        alt = 0.0
-        yaw = 90.0
-        pitch = 0.0
-        roll = 0.0
-        armed = False
-        mode = "HOLD"
-        battery_pct = 100
-        battery_volts = 25.2
-        
-        # For mock flight path
-        target_wp_idx = 0
-        waypoints = []
-        flying = False
-        
-        while self.running:
-            start_time = time.time()
+    def add_connection(self, connection_string: str):
+        """Spawns a new telemetry loop thread for a given MAVLink connection string."""
+        if connection_string in self.active_links:
+            print(f"⚠️ Connection link {connection_string} is already active.")
+            return True
             
-            # Check for control commands from WebSocket
-            try:
-                while not self.to_drone_queue.empty():
-                    cmd = self.to_drone_queue.get_nowait()
-                    cmd_type = cmd.get("type")
-                    if cmd_type == "arm":
-                        armed = cmd.get("armed", False)
-                        if armed:
-                            mode = "HOLD"
-                        else:
-                            mode = "HOLD"
-                            flying = False
-                            alt = 0.0
-                        print(f"[Mock] Vehicle armed state set to: {armed}")
-                    elif cmd_type == "set_mode":
-                        new_mode = cmd.get("mode", "HOLD")
-                        mode = new_mode
-                        if mode == "MISSION" and armed and waypoints:
-                            flying = True
-                            target_wp_idx = 0
-                        print(f"[Mock] Flight mode set to: {mode}")
-                    elif cmd_type == "upload_mission":
-                        waypoints = cmd.get("waypoints", [])
-                        print(f"[Mock] Received {len(waypoints)} waypoints for simulation.")
-            except queue.Empty:
-                pass
-                
-            # Simulate flight dynamics if flying
-            groundspeed = 0.0
-            airspeed = 0.0
-            if flying and waypoints and target_wp_idx < len(waypoints):
-                wp = waypoints[target_wp_idx]
-                wp_lat = wp.get("latitude")
-                wp_lon = wp.get("longitude")
-                wp_alt = wp.get("altitude", 0.0)
-                cmd_name = wp.get("command")
-                
-                if cmd_name == "RTL":
-                    # RTL returns to home (first takeoff point or start point)
-                    wp_lat = 24.7746
-                    wp_lon = 121.0446
-                    wp_alt = 0.0
-                
-                # Move drone towards waypoint
-                if wp_lat is not None and wp_lon is not None:
-                    dy = wp_lat - lat
-                    dx = wp_lon - lon
-                    dist = math.sqrt(dx*dx + dy*dy)
-                    
-                    if dist > 0.00005: # Not yet arrived
-                        groundspeed = 10.0 # 10 m/s
-                        airspeed = 10.0
-                        step_size = 0.00001 # approx 1m step at 20Hz
-                        lat += (dy / dist) * step_size
-                        lon += (dx / dist) * step_size
-                        yaw = math.degrees(math.atan2(dx, dy)) % 360
-                        
-                        # Climb/descend
-                        d_alt = wp_alt - alt
-                        if abs(d_alt) > 0.5:
-                            alt += math.copysign(0.2, d_alt)
-                            pitch = 5.0 if d_alt > 0 else -5.0
-                        else:
-                            pitch = 0.0
-                        roll = 2.0 * math.sin(tick * 0.1) # slight banking
-                    else:
-                        # Arrived at waypoint
-                        print(f"[Mock] Arrived at waypoint {target_wp_idx}: {cmd_name}")
-                        hold_time = wp.get("hold_time", 0)
-                        if hold_time > 0:
-                            # Wait hold time (mocked simply by advancing index next tick)
-                            pass
-                        
-                        if cmd_name == "RTL" and alt < 1.0:
-                            flying = False
-                            armed = False
-                            mode = "HOLD"
-                            print("[Mock] RTL completed. Drone landed and disarmed.")
-                        else:
-                            target_wp_idx += 1
-                            if target_wp_idx >= len(waypoints):
-                                # If finished all and no RTL, hold
-                                flying = False
-                                mode = "HOLD"
-                                print("[Mock] Finished all waypoints. Holding position.")
-                else:
-                    # e.g. TAKEOFF or RTL with no specific lat/lon
-                    if cmd_name == "TAKEOFF":
-                        d_alt = wp_alt - alt
-                        if d_alt > 0.5:
-                            alt += 0.3
-                            pitch = 8.0
-                            groundspeed = 1.0
-                        else:
-                            pitch = 0.0
-                            target_wp_idx += 1
-                    elif cmd_name == "RTL":
-                        # Descend to ground
-                        if alt > 0.5:
-                            alt -= 0.3
-                            pitch = -8.0
-                            groundspeed = 1.0
-                        else:
-                            alt = 0.0
-                            pitch = 0.0
-                            flying = False
-                            armed = False
-                            mode = "HOLD"
-                            print("[Mock] RTL completed. Landed and disarmed.")
-            
-            # Oscillate attitude slightly to look alive
-            if not flying:
-                roll = 0.5 * math.sin(tick * 0.05)
-                pitch = 0.3 * math.cos(tick * 0.07)
-                groundspeed = 0.0
-                airspeed = 0.0
-                if armed:
-                    # Slowly drain battery when armed
-                    battery_volts = max(18.0, battery_volts - 0.0005)
-                    battery_pct = int(((battery_volts - 18.0) / (25.2 - 18.0)) * 100)
-            else:
-                battery_volts = max(18.0, battery_volts - 0.002)
-                battery_pct = int(((battery_volts - 18.0) / (25.2 - 18.0)) * 100)
-                
-            tick += 1
-            
-            with self.telemetry_lock:
-                self.telemetry = {
-                    "timestamp": int(time.time() * 1000),
-                    "vehicle_id": self.vehicle_id,
-                    "status": {
-                        "armed": armed,
-                        "mode": mode,
-                        "battery_percent": battery_pct,
-                        "battery_voltage": round(battery_volts, 2),
-                        "gps_satellites": 18 if armed else 12,
-                        "gps_fix_type": 4 # 3D RTK Fix
-                    },
-                    "pose": {
-                        "roll": round(roll, 2),
-                        "pitch": round(pitch, 2),
-                        "yaw": round(yaw, 2),
-                        "heading": int(yaw)
-                    },
-                    "navigation": {
-                        "latitude": round(lat, 6),
-                        "longitude": round(lon, 6),
-                        "relative_altitude": round(alt, 1),
-                        "airspeed": round(airspeed, 1),
-                        "groundspeed": round(groundspeed, 1)
-                    }
-                }
-                
-            # Broadcast telemetry to websocket queue
-            self._queue_telemetry_broadcast()
-            
-            # 20Hz -> 50ms period
-            elapsed = time.time() - start_time
-            sleep_time = max(0.001, 0.050 - elapsed)
-            time.sleep(sleep_time)
+        t = threading.Thread(
+            target=self._mavlink_reader_loop, 
+            args=(connection_string,), 
+            name=f"MAVLink-{connection_string}", 
+            daemon=True
+        )
+        t.start()
+        self.threads.append(t)
+        return True
 
-    # --- MAVLINK TELEMETRY LOOP ---
-    def _mavlink_loop(self):
-        """Reads MAVLink packets and parses them into telemetry."""
+    # --- MAVLINK READER THREAD (ONE PER CONNECTION LINK) ---
+    def _mavlink_reader_loop(self, connection_string: str):
+        print(f"📡 Launching link loop for: {connection_string}")
+        master = None
+        
         while self.running:
             try:
-                self.master = mavutil.mavlink_connection(self.connection_string)
-                print(f"📡 MAVLink Connection established on {self.connection_string}")
+                master = mavutil.mavlink_connection(connection_string)
+                self.active_links[connection_string] = master
+                print(f"✅ MAVLink Link established: {connection_string}")
                 break
             except Exception as e:
-                print(f"❌ Failed to connect MAVLink: {e}. Retrying in 3 seconds...")
-                time.sleep(3)
+                print(f"❌ Connection error on {connection_string}: {e}. Retrying in 4s...")
+                time.sleep(4)
                 
         last_telem_send = 0
         gps_satellites = 0
@@ -309,38 +136,38 @@ class Gateway:
         airspeed = 0.0
         armed = False
         mode_str = "UNKNOWN"
+        vehicle_id = None
         
-        # Track active telemetry inputs
         while self.running:
             try:
-                # Non-blocking receive
-                msg = self.master.recv_match(blocking=True, timeout=0.05)
+                # Read incoming MAVLink packets
+                msg = master.recv_match(blocking=True, timeout=0.05)
                 if msg is None:
-                    # Check for read timeout, continue loop
                     time.sleep(0.01)
                     continue
                     
                 msg_type = msg.get_type()
+                src_system = msg.get_srcSystem()
+                
+                if vehicle_id is None or vehicle_id != src_system:
+                    vehicle_id = src_system
+                    # Bind this vehicle ID to this master interface and connection string
+                    self.vehicle_masters[vehicle_id] = master
+                    self.vehicle_link_mapping[vehicle_id] = connection_string
+                    print(f"🛸 Discovered new Vehicle System ID #{vehicle_id} on {connection_string}")
                 
                 # Check for heartbeat to get armed state and flight mode
                 if msg_type == 'HEARTBEAT':
-                    self.vehicle_id = msg.get_srcSystem()
-                    
-                    # Decode Armed
                     armed = (msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED) > 0
-                    
-                    # Decode PX4/ArduPilot Mode
                     custom_mode = msg.custom_mode
                     type_drone = msg.type
                     
-                    # PX4 Custom Mode Parsing
                     # main_mode is byte 3 of custom_mode, sub_mode is byte 4
                     main_mode = (custom_mode >> 8) & 0xFF
                     sub_mode = (custom_mode >> 16) & 0xFF
                     
                     if type_drone in [mavutil.mavlink.MAV_TYPE_QUADROTOR, mavutil.mavlink.MAV_TYPE_HEXAROTOR, 
                                       mavutil.mavlink.MAV_TYPE_FIXED_WING, mavutil.mavlink.MAV_TYPE_OCTOROTOR]:
-                        # Typical PX4 autopilot
                         if main_mode == 1:
                             mode_str = "MANUAL"
                         elif main_mode == 2:
@@ -369,7 +196,6 @@ class Gateway:
                         else:
                             mode_str = f"PX4_MODE_{main_mode}_{sub_mode}"
                     else:
-                        # Fallback mode mapping
                         mode_str = f"MODE_{custom_mode}"
                         
                 elif msg_type == 'ATTITUDE':
@@ -382,10 +208,8 @@ class Gateway:
                     lat = msg.lat / 1e7
                     lon = msg.lon / 1e7
                     alt = msg.relative_alt / 1000.0 # relative to ground/home in meters
-                    # velocity in cm/s -> convert to m/s
                     vx = msg.vx / 100.0
                     vy = msg.vy / 100.0
-                    vz = msg.vz / 100.0
                     groundspeed = math.sqrt(vx*vx + vy*vy)
                     
                 elif msg_type == 'VFR_HUD':
@@ -393,25 +217,25 @@ class Gateway:
                     heading = msg.heading
                     
                 elif msg_type == 'SYS_STATUS':
-                    battery_voltage = msg.voltage_battery / 1000.0 # mV -> V
-                    battery_percent = msg.battery_remaining # percentage 0-100
+                    battery_voltage = msg.voltage_battery / 1000.0
+                    battery_percent = msg.battery_remaining
                     
                 elif msg_type == 'GPS_RAW_INT':
                     gps_satellites = msg.satellites_visible
                     gps_fix_type = msg.fix_type
                     
             except Exception as e:
-                print(f"⚠️ Error reading MAVLink packet: {e}")
+                print(f"⚠️ Error reading MAVLink packet on {connection_string}: {e}")
                 time.sleep(0.1)
                 
             # Throttle output stream to Web UI at 20Hz
             now = time.time()
-            if now - last_telem_send >= 0.050:
+            if now - last_telem_send >= 0.050 and vehicle_id is not None:
                 last_telem_send = now
                 with self.telemetry_lock:
-                    self.telemetry = {
+                    self.telemetries[vehicle_id] = {
                         "timestamp": int(now * 1000),
-                        "vehicle_id": self.vehicle_id,
+                        "vehicle_id": vehicle_id,
                         "status": {
                             "armed": armed,
                             "mode": mode_str,
@@ -434,125 +258,286 @@ class Gateway:
                             "groundspeed": round(groundspeed, 1)
                         }
                     }
-                self._queue_telemetry_broadcast()
+                self._queue_telemetry_broadcast(vehicle_id)
 
-    def _queue_telemetry_broadcast(self):
-        """Pushes telemetry dictionary to the websocket message queue."""
+    # --- MOCK SIMULATOR ---
+    def _mock_telemetry_loop(self):
+        """Generates realistic telemetry for 2 mock vehicles at 20Hz."""
+        tick = 0
+        
+        while self.running:
+            start_time = time.time()
+            
+            # Check for incoming controls
+            try:
+                while not self.to_drone_queue.empty():
+                    cmd = self.to_drone_queue.get_nowait()
+                    cmd_type = cmd.get("type")
+                    vehicle_id = cmd.get("vehicle_id", 1)
+                    
+                    if vehicle_id in self.mock_vehicles_state:
+                        state = self.mock_vehicles_state[vehicle_id]
+                        if cmd_type == "arm":
+                            state["armed"] = cmd.get("armed", False)
+                            if not state["armed"]:
+                                state["flying"] = False
+                                state["alt"] = 0.0
+                            print(f"[Mock #{vehicle_id}] Vehicle armed state set to: {state['armed']}")
+                        elif cmd_type == "set_mode":
+                            new_mode = cmd.get("mode", "HOLD")
+                            state["mode"] = new_mode
+                            if state["mode"] == "MISSION" and state["armed"] and state["waypoints"]:
+                                state["flying"] = True
+                                state["target_wp_idx"] = 0
+                            print(f"[Mock #{vehicle_id}] Flight mode set to: {state['mode']}")
+                        elif cmd_type == "upload_mission":
+                            state["waypoints"] = cmd.get("waypoints", [])
+                            print(f"[Mock #{vehicle_id}] Received {len(state['waypoints'])} waypoints.")
+            except queue.Empty:
+                pass
+                
+            # Simulate flight dynamics for each vehicle
+            for vid, state in self.mock_vehicles_state.items():
+                groundspeed = 0.0
+                airspeed = 0.0
+                roll = state["roll"]
+                pitch = state["pitch"]
+                yaw = state["yaw"]
+                lat = state["lat"]
+                lon = state["lon"]
+                alt = state["alt"]
+                flying = state["flying"]
+                waypoints = state["waypoints"]
+                target_wp_idx = state["target_wp_idx"]
+                armed = state["armed"]
+                mode = state["mode"]
+                battery_volts = state["battery_volts"]
+                
+                if flying and waypoints and target_wp_idx < len(waypoints):
+                    wp = waypoints[target_wp_idx]
+                    wp_lat = wp.get("latitude")
+                    wp_lon = wp.get("longitude")
+                    wp_alt = wp.get("altitude", 0.0)
+                    cmd_name = wp.get("command")
+                    
+                    if cmd_name == "RTL":
+                        wp_lat = 24.7746 if vid == 1 else 24.7760
+                        wp_lon = 121.0446 if vid == 1 else 121.0465
+                        wp_alt = 0.0
+                    
+                    # Move drone
+                    if wp_lat is not None and wp_lon is not None:
+                        dy = wp_lat - lat
+                        dx = wp_lon - lon
+                        dist = math.sqrt(dx*dx + dy*dy)
+                        
+                        if dist > 0.00005:
+                            groundspeed = 11.5 if vid == 1 else 9.5
+                            airspeed = groundspeed
+                            step_size = 0.00001
+                            lat += (dy / dist) * step_size
+                            lon += (dx / dist) * step_size
+                            yaw = math.degrees(math.atan2(dx, dy)) % 360
+                            
+                            d_alt = wp_alt - alt
+                            if abs(d_alt) > 0.5:
+                                alt += math.copysign(0.2, d_alt)
+                                pitch = 5.0 if d_alt > 0 else -5.0
+                            else:
+                                pitch = 0.0
+                            roll = 2.0 * math.sin(tick * 0.1)
+                        else:
+                            print(f"[Mock #{vid}] Arrived at WP {target_wp_idx}: {cmd_name}")
+                            if cmd_name == "RTL" and alt < 1.0:
+                                flying = False
+                                armed = False
+                                mode = "HOLD"
+                                alt = 0.0
+                            else:
+                                target_wp_idx += 1
+                                if target_wp_idx >= len(waypoints):
+                                    flying = False
+                                    mode = "HOLD"
+                    else:
+                        if cmd_name == "TAKEOFF":
+                            d_alt = wp_alt - alt
+                            if d_alt > 0.5:
+                                alt += 0.3
+                                pitch = 7.0
+                                groundspeed = 1.0
+                            else:
+                                pitch = 0.0
+                                target_wp_idx += 1
+                        elif cmd_name == "RTL":
+                            if alt > 0.5:
+                                alt -= 0.3
+                                pitch = -7.0
+                                groundspeed = 1.0
+                            else:
+                                alt = 0.0
+                                pitch = 0.0
+                                flying = False
+                                armed = False
+                                mode = "HOLD"
+                else:
+                    roll = 0.5 * math.sin(tick * 0.05 + vid)
+                    pitch = 0.3 * math.cos(tick * 0.07 - vid)
+                    
+                if armed:
+                    battery_volts = max(18.0, battery_volts - (0.002 if flying else 0.0004))
+                battery_pct = int(((battery_volts - 18.0) / (25.2 - 18.0)) * 100)
+                
+                # Update state dict
+                state["lat"] = lat
+                state["lon"] = lon
+                state["alt"] = alt
+                state["yaw"] = yaw
+                state["pitch"] = pitch
+                state["roll"] = roll
+                state["armed"] = armed
+                state["mode"] = mode
+                state["battery_volts"] = battery_volts
+                state["target_wp_idx"] = target_wp_idx
+                state["flying"] = flying
+                
+                with self.telemetry_lock:
+                    self.telemetries[vid] = {
+                        "timestamp": int(time.time() * 1000),
+                        "vehicle_id": vid,
+                        "status": {
+                            "armed": armed,
+                            "mode": mode,
+                            "battery_percent": battery_pct,
+                            "battery_voltage": round(battery_volts, 1),
+                            "gps_satellites": 16 if vid == 1 else 14,
+                            "gps_fix_type": 4
+                        },
+                        "pose": {
+                            "roll": round(roll, 1),
+                            "pitch": round(pitch, 1),
+                            "yaw": round(yaw, 1),
+                            "heading": int(yaw)
+                        },
+                        "navigation": {
+                            "latitude": round(lat, 6),
+                            "longitude": round(lon, 6),
+                            "relative_altitude": round(alt, 1),
+                            "airspeed": round(airspeed, 1),
+                            "groundspeed": round(groundspeed, 1)
+                        }
+                    }
+                self._queue_telemetry_broadcast(vid)
+                
+            tick += 1
+            elapsed = time.time() - start_time
+            time.sleep(max(0.001, 0.050 - elapsed))
+
+    def _queue_telemetry_broadcast(self, vehicle_id: int):
         with self.telemetry_lock:
             telem_data = json.dumps({
                 "type": "telemetry",
-                "data": self.telemetry
+                "vehicle_id": vehicle_id,
+                "data": self.telemetries[vehicle_id]
             })
         self.to_ws_queue.put(telem_data)
 
-    # --- MISSION WORKER PROTOCOL STATE MACHINE ---
+    # --- DYNAMIC COMMAND / MISSION ROUTER ---
     def _mission_worker_loop(self):
-        """Processes mission upload tasks from the UI queue."""
         while self.running:
             try:
                 task = self.to_drone_queue.get(timeout=0.5)
                 task_type = task.get("type")
+                vehicle_id = task.get("vehicle_id", 1)
                 
                 if task_type == "upload_mission":
                     self._handle_upload_mission(task)
                 elif task_type == "arm" and not self.use_mock:
-                    self._handle_arm_disarm(task.get("armed", False))
+                    self._handle_arm_disarm(vehicle_id, task.get("armed", False))
                 elif task_type == "set_mode" and not self.use_mock:
-                    self._handle_change_mode(task.get("mode", "HOLD"))
+                    self._handle_change_mode(vehicle_id, task.get("mode", "HOLD"))
                     
             except queue.Empty:
                 pass
             except Exception as e:
                 print(f"❌ Error in mission worker: {e}")
 
-    def _update_mission_status(self, mission_id: str, state: str, progress: int, message: str):
+    def _update_mission_status(self, vehicle_id: int, mission_id: str, state: str, progress: int, message: str):
         with self.mission_lock:
-            self.mission_status = {
+            self.mission_statuses[vehicle_id] = {
                 "mission_id": mission_id,
                 "state": state,
                 "progress": progress,
                 "message": message
             }
-        # Push to WS broadcast queue immediately
         msg = json.dumps({
             "type": "mission_status",
-            "data": self.mission_status
+            "vehicle_id": vehicle_id,
+            "data": self.mission_statuses[vehicle_id]
         })
         self.to_ws_queue.put(msg)
-        print(f"📋 Mission [{state}] progress: {progress}% - {message}")
+        print(f"📋 Vehicle #{vehicle_id} Mission [{state}] progress: {progress}% - {message}")
 
     def _handle_upload_mission(self, task: Dict[str, Any]):
         mission_id = task.get("mission_id", "")
         waypoints = task.get("waypoints", [])
+        vehicle_id = task.get("vehicle_id", 1)
         
         if not waypoints:
-            self._update_mission_status(mission_id, "ERROR", 0, "No waypoints provided")
+            self._update_mission_status(vehicle_id, mission_id, "ERROR", 0, "No waypoints provided")
             return
             
-        self._update_mission_status(mission_id, "UPLOADING", 10, "Starting mission upload...")
+        self._update_mission_status(vehicle_id, mission_id, "UPLOADING", 10, "Starting mission upload...")
         
         if self.use_mock:
-            # Simulate uploading steps
             total = len(waypoints)
             for i in range(total):
-                time.sleep(0.4) # Simulate network lag
+                time.sleep(0.3)
                 pct = int(10 + (i / total) * 80)
-                self._update_mission_status(mission_id, "UPLOADING", pct, f"Sending waypoint {i+1} of {total}")
-                
-            time.sleep(0.5)
-            self._update_mission_status(mission_id, "SUCCESS", 100, "Mission uploaded successfully")
+                self._update_mission_status(vehicle_id, mission_id, "UPLOADING", pct, f"Sending waypoint {i+1} of {total}")
+            time.sleep(0.3)
+            self._update_mission_status(vehicle_id, mission_id, "SUCCESS", 100, "Mission uploaded successfully")
             return
 
-        # REAL MAVLink Mission Protocol Upload
+        # Real MAVLink Mission Protocol Upload
         try:
-            if not self.master:
-                self._update_mission_status(mission_id, "ERROR", 0, "Drone not connected")
+            master = self.vehicle_masters.get(vehicle_id)
+            if not master:
+                self._update_mission_status(vehicle_id, mission_id, "ERROR", 0, f"Vehicle #{vehicle_id} not connected")
                 return
 
-            target_sys = self.vehicle_id
-            target_comp = 1 # autopilot
+            target_sys = vehicle_id
+            target_comp = 1
             
-            # 1. Clear existing mission items
-            self._update_mission_status(mission_id, "UPLOADING", 15, "Clearing old mission...")
-            self.master.mav.mission_clear_all_send(target_sys, target_comp)
+            self._update_mission_status(vehicle_id, mission_id, "UPLOADING", 15, "Clearing old mission...")
+            master.mav.mission_clear_all_send(target_sys, target_comp)
             
-            # Wait for ACK on mission clear
-            ack = self.master.recv_match(type='MISSION_ACK', blocking=True, timeout=1.5)
-            if not ack:
-                print("⚠️ Clear mission warning: Timeout waiting for MISSION_ACK, proceeding anyway.")
+            # Allow some response time
+            time.sleep(0.1)
             
-            # 2. Send Mission Count
-            # MAVLink needs waypoint 0 to represent Home.
-            # We'll prepend a Home position if the first item is not waypoint 0.
-            # Actually, standard way is to set index 0 as Home location, and 1..N as waypoint items.
-            # Let's map waypoints.
+            # Map waypoints
             mav_items = []
-            
-            # Waypoint 0 (Home position)
-            # We can use the current latitude/longitude/altitude or the takeoff point
             home_lat = waypoints[0].get("latitude", 0.0)
             home_lon = waypoints[0].get("longitude", 0.0)
             home_alt = 0.0
             
-            # Append home as sequence 0
+            # Add home pos at seq 0
             mav_items.append({
                 "seq": 0,
                 "command": mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
-                "frame": 0, # MAV_FRAME_MISSION (0) or global
+                "frame": 0,
                 "current": 0,
                 "autocontinue": 1,
                 "p1": 0, "p2": 0, "p3": 0, "p4": 0,
                 "x": int(home_lat * 1e7), "y": int(home_lon * 1e7), "z": float(home_alt)
             })
             
-            for idx, wp in enumerate(waypoints):
+            for wp in waypoints:
                 cmd_str = wp.get("command", "WAYPOINT")
                 lat = wp.get("latitude", 0.0)
                 lon = wp.get("longitude", 0.0)
                 alt = wp.get("altitude", 10.0)
                 hold_time = wp.get("hold_time", 0.0)
                 
-                # MAVLink commands
                 if cmd_str == "TAKEOFF":
                     cmd = mavutil.mavlink.MAV_CMD_NAV_TAKEOFF
                 elif cmd_str == "RTL":
@@ -566,192 +551,184 @@ class Gateway:
                     "frame": mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
                     "current": 0,
                     "autocontinue": 1,
-                    "p1": float(hold_time), # param 1 hold time
-                    "p2": 2.0,              # param 2 acceptance radius
-                    "p3": 0.0,              # param 3 pass radius
-                    "p4": 0.0,              # param 4 yaw
-                    "x": int(lat * 1e7),
-                    "y": int(lon * 1e7),
-                    "z": float(alt)
+                    "p1": float(hold_time),
+                    "p2": 2.0, "p3": 0.0, "p4": 0.0,
+                    "x": int(lat * 1e7), "y": int(lon * 1e7), "z": float(alt)
                 })
                 
             count = len(mav_items)
-            print(f"📦 Prepared {count} MAVLink mission items (including Home). uploading...")
-            
-            # Send MISSION_COUNT
-            self.master.mav.mission_count_send(target_sys, target_comp, count)
+            master.mav.mission_count_send(target_sys, target_comp, count)
             
             retries = 3
             last_request_time = time.time()
             
-            # 3. Receive request loop
             while True:
-                # Wait for request
-                msg = self.master.recv_match(type=['MISSION_REQUEST', 'MISSION_REQUEST_INT'], blocking=True, timeout=1.0)
-                
+                msg = master.recv_match(type=['MISSION_REQUEST', 'MISSION_REQUEST_INT'], blocking=True, timeout=1.0)
                 if not msg:
                     if time.time() - last_request_time > 2.0:
                         retries -= 1
                         if retries <= 0:
                             raise TimeoutError("Timeout waiting for MISSION_REQUEST")
-                        print(f"⚠️ Timeout waiting for waypoint request, re-sending count... (Retries left: {retries})")
-                        self.master.mav.mission_count_send(target_sys, target_comp, count)
+                        print(f"⚠️ Resending mission count to #{vehicle_id} (Retries left: {retries})")
+                        master.mav.mission_count_send(target_sys, target_comp, count)
                         last_request_time = time.time()
                     continue
                     
-                # Reset retries on message received
                 retries = 3
                 last_request_time = time.time()
-                
                 seq = msg.seq
                 if seq >= count:
-                    print(f"❌ Drone requested sequence {seq} which is out of bounds (count {count})")
                     break
                     
-                # Upload item
                 item = mav_items[seq]
                 pct = int(20 + (seq / count) * 70)
-                self._update_mission_status(mission_id, "UPLOADING", pct, f"Sending waypoint {seq} of {count-1}")
+                self._update_mission_status(vehicle_id, mission_id, "UPLOADING", pct, f"Sending waypoint {seq} of {count-1}")
                 
-                # Send MISSION_ITEM_INT
-                self.master.mav.mission_item_int_send(
+                master.mav.mission_item_int_send(
                     target_sys, target_comp,
-                    item["seq"],
-                    item["frame"],
-                    item["command"],
-                    item["current"],
-                    item["autocontinue"],
+                    item["seq"], item["frame"], item["command"],
+                    item["current"], item["autocontinue"],
                     item["p1"], item["p2"], item["p3"], item["p4"],
                     item["x"], item["y"], item["z"]
                 )
                 
-                # If we just sent the last item, we wait for MISSION_ACK
                 if seq == count - 1:
                     break
                     
-            # 4. Wait for MISSION_ACK
-            ack_msg = self.master.recv_match(type='MISSION_ACK', blocking=True, timeout=2.0)
+            ack_msg = master.recv_match(type='MISSION_ACK', blocking=True, timeout=2.0)
             if ack_msg:
                 if ack_msg.type == mavutil.mavlink.MAV_MISSION_ACCEPTED:
-                    self._update_mission_status(mission_id, "SUCCESS", 100, "Mission uploaded successfully")
+                    self._update_mission_status(vehicle_id, mission_id, "SUCCESS", 100, "Mission uploaded successfully")
                 else:
                     self._update_mission_status(
-                        mission_id, "ERROR", 100, 
+                        vehicle_id, mission_id, "ERROR", 100, 
                         f"Mission upload rejected by flight controller. Code: {ack_msg.type}"
                     )
             else:
-                self._update_mission_status(mission_id, "ERROR", 100, "Timeout waiting for MISSION_ACK from autopilot")
+                self._update_mission_status(vehicle_id, mission_id, "ERROR", 100, "Timeout waiting for MISSION_ACK from autopilot")
                 
         except Exception as e:
-            self._update_mission_status(mission_id, "ERROR", 0, f"Upload error: {str(e)}")
+            self._update_mission_status(vehicle_id, mission_id, "ERROR", 0, f"Upload error: {str(e)}")
 
-    def _handle_arm_disarm(self, arm: bool):
-        if not self.master:
+    def _handle_arm_disarm(self, vehicle_id: int, arm: bool):
+        master = self.vehicle_masters.get(vehicle_id)
+        if not master:
             return
         cmd = mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM
-        self.master.mav.command_long_send(
-            self.vehicle_id, 1, cmd, 0,
+        master.mav.command_long_send(
+            vehicle_id, 1, cmd, 0,
             1.0 if arm else 0.0, 0, 0, 0, 0, 0, 0
         )
-        print(f"⚙️ MAVLink arm command sent: {arm}")
+        print(f"⚙️ MAVLink arm command sent to Vehicle #{vehicle_id}: {arm}")
 
-    def _handle_change_mode(self, mode: str):
-        if not self.master:
+    def _handle_change_mode(self, vehicle_id: int, mode: str):
+        master = self.vehicle_masters.get(vehicle_id)
+        if not master:
             return
             
-        # We need to map target modes to custom PX4 modes
-        # PX4 AUTO submodes
         PX4_CUSTOM_MAIN_MODE_AUTO = 4
-        
         mode_mapping = {
-            "HOLD": (PX4_CUSTOM_MAIN_MODE_AUTO, 3), # AUTO_LOITER
-            "MISSION": (PX4_CUSTOM_MAIN_MODE_AUTO, 4), # AUTO_MISSION
-            "RTL": (PX4_CUSTOM_MAIN_MODE_AUTO, 5), # AUTO_RTL
+            "HOLD": (PX4_CUSTOM_MAIN_MODE_AUTO, 3),
+            "MISSION": (PX4_CUSTOM_MAIN_MODE_AUTO, 4),
+            "RTL": (PX4_CUSTOM_MAIN_MODE_AUTO, 5),
         }
         
         if mode in mode_mapping:
             main_mode, sub_mode = mode_mapping[mode]
             custom_mode = (sub_mode << 16) | (main_mode << 8)
-            # base_mode has MAV_MODE_FLAG_CUSTOM_MODE_ENABLED (1)
-            self.master.mav.set_mode_send(
-                self.vehicle_id,
+            master.mav.set_mode_send(
+                vehicle_id,
                 mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
                 custom_mode
             )
-            print(f"⚙️ MAVLink mode command sent: PX4 {mode} (main {main_mode}, sub {sub_mode})")
-        else:
-            print(f"⚠️ Unsupported flight mode for command: {mode}")
+            print(f"⚙️ MAVLink mode set for Vehicle #{vehicle_id}: PX4 {mode} (main {main_mode}, sub {sub_mode})")
 
-    # --- WEBSOCKET SERVER WORKER (ASYNCIO) ---
+    # --- WEBSOCKET COMMUNICATION (ASYNCIO) ---
     async def _ws_broadcast_loop(self):
         """Pops telemetry/status messages and broadcasts to all Web UI clients."""
         while self.running:
-            # Check queue inside async loop using asyncio.sleep to be non-blocking
             try:
-                # We consume up to 100 items from queue at once to prevent delay
                 messages = []
                 while not self.to_ws_queue.empty() and len(messages) < 100:
                     messages.append(self.to_ws_queue.get_nowait())
                 
                 if messages and self.client_sockets:
-                    # We only broadcast the last telemetry message to avoid flooding, but send all mission status changes
-                    telem_msg = None
-                    other_msgs = []
-                    for m in messages:
-                        try:
-                            parsed = json.loads(m)
-                            if parsed.get("type") == "telemetry":
-                                telem_msg = m # keep only latest
-                            else:
-                                other_msgs.append(m)
-                        except Exception:
-                            other_msgs.append(m)
-                            
-                    to_send = other_msgs
-                    if telem_msg:
-                        to_send.append(telem_msg)
-                        
+                    # Filter and broadcast updates
                     for client in list(self.client_sockets):
-                        for m_to_send in to_send:
+                        for m_to_send in messages:
                             try:
                                 await client.send(m_to_send)
                             except Exception:
                                 self.client_sockets.remove(client)
             except Exception as e:
-                print(f"⚠️ WebSocket broadcast error: {e}")
+                pass
                 
             await asyncio.sleep(0.01)
 
     async def _ws_handler(self, websocket):
-        """Handles incoming messages from client WebSocket connections."""
         print(f"🔌 Web UI Client connected: {websocket.remote_address}")
         self.client_sockets.add(websocket)
+        
+        # Immediately notify the list of active links
+        await websocket.send(json.dumps({
+            "type": "links_list",
+            "data": list(self.active_links.keys())
+        }))
         
         try:
             async for message in websocket:
                 try:
                     payload = json.loads(message)
                     action = payload.get("action")
+                    data = payload.get("data", {})
+                    vehicle_id = data.get("vehicle_id", 1)
                     
-                    if action == "arm":
-                        armed = payload.get("data", {}).get("armed", False)
-                        self.to_drone_queue.put({"type": "arm", "armed": armed})
+                    if action == "add_connection":
+                        conn_type = data.get("type", "udp")
+                        conn_str = ""
+                        
+                        if conn_type == "udp":
+                            port = data.get("port", 14540)
+                            conn_str = f"udp:127.0.0.1:{port}"
+                        elif conn_type == "tcp":
+                            host = data.get("host", "127.0.0.1")
+                            port = data.get("port", 5760)
+                            conn_str = f"tcp:{host}:{port}"
+                        elif conn_type == "serial":
+                            port_path = data.get("port", "/dev/ttyUSB0")
+                            baud = data.get("baud", 57600)
+                            conn_str = f"{port_path}:{baud}"
+                            
+                        if conn_str:
+                            print(f"🔌 WebSocket requested to add connection: {conn_str}")
+                            self.add_connection(conn_str)
+                            
+                            # Reply with updated links list
+                            await websocket.send(json.dumps({
+                                "type": "links_list",
+                                "data": list(self.active_links.keys())
+                            }))
+                            
+                    elif action == "arm":
+                        armed = data.get("armed", False)
+                        self.to_drone_queue.put({"type": "arm", "vehicle_id": vehicle_id, "armed": armed})
                     elif action == "set_mode":
-                        mode = payload.get("data", {}).get("mode", "HOLD")
-                        self.to_drone_queue.put({"type": "set_mode", "mode": mode})
+                        mode = data.get("mode", "HOLD")
+                        self.to_drone_queue.put({"type": "set_mode", "vehicle_id": vehicle_id, "mode": mode})
                     elif action == "upload_mission":
-                        waypoints = payload.get("data", {}).get("waypoints", [])
-                        mission_id = payload.get("data", {}).get("mission_id", "mission")
+                        waypoints = data.get("waypoints", [])
+                        mission_id = data.get("mission_id", "mission")
                         self.to_drone_queue.put({
                             "type": "upload_mission",
+                            "vehicle_id": vehicle_id,
                             "mission_id": mission_id,
                             "waypoints": waypoints
                         })
                     else:
-                        print(f"❓ Unknown WebSocket message action received: {action}")
+                        print(f"❓ Unknown action: {action}")
                 except Exception as e:
-                    print(f"⚠️ Error parsing client message: {e}")
-        except Exception as e:
+                    print(f"⚠️ Error parsing payload: {e}")
+        except Exception:
             pass
         finally:
             print(f"🔌 Web UI Client disconnected: {websocket.remote_address}")
@@ -762,20 +739,17 @@ class Gateway:
         import websockets
         async with websockets.serve(self._ws_handler, self.ws_host, self.ws_port):
             print(f"🌐 WebSocket Server running on ws://{self.ws_host}:{self.ws_port}")
-            # Spawn the broadcast background loop
             await self._ws_broadcast_loop()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="HGCS Gateway - Bridge between MAVLink and Web UI")
-    parser.add_argument("--conn", type=str, default="udp:127.0.0.1:14540", help="MAVLink connection string (e.g. udp:127.0.0.1:14540, /dev/ttyACM0:115200)")
+    parser = argparse.ArgumentParser(description="HGCS Multi-Vehicle Gateway")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="WebSocket host")
     parser.add_argument("--port", type=int, default=8080, help="WebSocket port")
-    parser.add_argument("--mock", action="store_true", help="Force mock telemetry generation")
+    parser.add_argument("--mock", action="store_true", help="Force multi-drone mock telemetry")
     
     args = parser.parse_args()
     
     gateway = Gateway(
-        connection_string=args.conn,
         ws_host=args.host,
         ws_port=args.port,
         use_mock=args.mock

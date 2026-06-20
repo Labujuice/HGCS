@@ -3,8 +3,6 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
 // Fix Leaflet marker icon asset paths
-// Since Vite changes asset hashes, Leaflet's default marker image URLs can break.
-// We override them or use custom div icons.
 delete (L.Icon.Default.prototype as any)._getIconUrl;
 L.Icon.Default.mergeOptions({
   iconRetinaUrl: "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png",
@@ -20,10 +18,18 @@ export interface Waypoint {
   hold_time?: number; // seconds
 }
 
+export interface MapVehicle {
+  id: number;
+  latitude: number;
+  longitude: number;
+  heading: number;
+  armed: boolean;
+  mode: string;
+}
+
 interface MapProps {
-  droneLat: number;
-  droneLon: number;
-  droneHeading: number;
+  vehicles: { [id: number]: MapVehicle };
+  activeVehicleId: number | null;
   waypoints: Waypoint[];
   selectedWpIndex: number | null;
   onWaypointsChange: (wps: Waypoint[]) => void;
@@ -31,9 +37,8 @@ interface MapProps {
 }
 
 export const FlightMap: React.FC<MapProps> = ({
-  droneLat,
-  droneLon,
-  droneHeading,
+  vehicles,
+  activeVehicleId,
   waypoints,
   selectedWpIndex,
   onWaypointsChange,
@@ -42,12 +47,12 @@ export const FlightMap: React.FC<MapProps> = ({
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   
-  // Keep mutable references of leaflet layers to avoid full redraws on small updates
-  const droneMarkerRef = useRef<L.Marker | null>(null);
+  // Track multiple vehicle markers: vehicleId -> L.Marker
+  const droneMarkersRef = useRef<{ [id: number]: L.Marker }>({});
   const wpMarkersRef = useRef<L.Marker[]>([]);
   const polylineRef = useRef<L.Polyline | null>(null);
   
-  // Prevent state loop by storing latest props in refs for event handlers
+  // Keep latest waypoints in ref to avoid effect loops
   const wpsStateRef = useRef<Waypoint[]>(waypoints);
   wpsStateRef.current = waypoints;
 
@@ -55,31 +60,30 @@ export const FlightMap: React.FC<MapProps> = ({
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
-    // Create Leaflet Map
     const map = L.map(mapContainerRef.current, {
       center: [24.7746, 121.0446],
       zoom: 16,
-      zoomControl: true,
-      doubleClickZoom: false // disable double-click zoom so we can use double-click for adding waypoints
+      zoomControl: false, // Hide default zoom, we will put it in custom location
+      doubleClickZoom: false
     });
 
-    // Load OpenStreetMap tiles (Service Worker will cache them if online, or read from cache if offline)
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      maxZoom: 19,
-      attribution: '© OpenStreetMap contributors'
+    // Dark-themed tiles for premium QGC-like experience (CartoDB Dark Matter)
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+      maxZoom: 20,
+      attribution: '© OpenStreetMap contributors © CARTO'
     }).addTo(map);
 
-    // Click handler to select nothing when clicking on map background
+    // Re-add Zoom control at custom position (bottom-right) to keep UI clean
+    L.control.zoom({ position: "bottomright" }).addTo(map);
+
     map.on("click", () => {
       onSelectWp(null);
     });
 
-    // Double-click handler to add waypoint
     map.on("dblclick", (e) => {
       const { lat, lng } = e.latlng;
       const currentWps = [...wpsStateRef.current];
       
-      // Determine command: if first WP, make it TAKEOFF. If RTL exists, insert before RTL.
       let command: "TAKEOFF" | "WAYPOINT" | "RTL" = "WAYPOINT";
       if (currentWps.length === 0) {
         command = "TAKEOFF";
@@ -94,7 +98,6 @@ export const FlightMap: React.FC<MapProps> = ({
       };
 
       let nextWps = [...currentWps];
-      // If there is an RTL at the end, insert before it
       if (currentWps.length > 0 && currentWps[currentWps.length - 1].command === "RTL") {
         nextWps.splice(currentWps.length - 1, 0, newWp);
       } else {
@@ -107,7 +110,6 @@ export const FlightMap: React.FC<MapProps> = ({
 
     mapRef.current = map;
 
-    // Cleanup
     return () => {
       if (mapRef.current) {
         mapRef.current.remove();
@@ -116,57 +118,94 @@ export const FlightMap: React.FC<MapProps> = ({
     };
   }, []);
 
-  // 2. Update Drone Marker Position & Orientation
+  // 2. Render Drone Markers (Support Multiple Vehicles)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    const droneIcon = L.divIcon({
-      html: `
-        <div style="transform: rotate(${droneHeading}deg); display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; filter: drop-shadow(0 2px 5px rgba(0,0,0,0.5));">
-          <!-- Premium glowing drone pointer -->
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M12 2L4 22L12 17L20 22L12 2Z" fill="#10B981" stroke="#ffffff" stroke-width="2" stroke-linejoin="round"/>
-            <circle cx="12" cy="11" r="2.5" fill="#ffffff" />
-          </svg>
-        </div>
-      `,
-      className: "drone-marker-div",
-      iconSize: [32, 32],
-      iconAnchor: [16, 16]
+    // Get list of active ids in props
+    const incomingIds = Object.keys(vehicles).map(Number);
+
+    // Remove any markers of vehicles that no longer exist
+    Object.keys(droneMarkersRef.current).forEach((idStr) => {
+      const id = Number(idStr);
+      if (!incomingIds.includes(id)) {
+        droneMarkersRef.current[id].remove();
+        delete droneMarkersRef.current[id];
+      }
     });
 
-    if (!droneMarkerRef.current) {
-      droneMarkerRef.current = L.marker([droneLat, droneLon], { icon: droneIcon }).addTo(map);
-      // Auto-pan to drone first time
-      map.setView([droneLat, droneLon], map.getZoom());
-    } else {
-      droneMarkerRef.current.setLatLng([droneLat, droneLon]);
-      droneMarkerRef.current.setIcon(droneIcon);
-    }
-  }, [droneLat, droneLon, droneHeading]);
+    // Draw / update markers
+    incomingIds.forEach((id) => {
+      const vehicle = vehicles[id];
+      const isActive = id === activeVehicleId;
+      
+      // Active drone glows emerald, inactive drone is steel blue
+      const droneColor = isActive ? "#10B981" : "#6B7280";
+      const glowStyle = isActive ? "filter: drop-shadow(0 0 8px #10B981);" : "";
+      
+      const droneIcon = L.divIcon({
+        html: `
+          <div style="transform: rotate(${vehicle.heading}deg); display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; ${glowStyle}">
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12 2L3 22L12 17L21 22L12 2Z" fill="${droneColor}" stroke="#ffffff" stroke-width="2" stroke-linejoin="round"/>
+              <circle cx="12" cy="11" r="2.5" fill="#ffffff" />
+            </svg>
+            <div style="
+              position: absolute;
+              top: -8px;
+              background: ${droneColor};
+              color: white;
+              font-family: monospace;
+              font-size: 8px;
+              font-weight: bold;
+              padding: 1px 3px;
+              border-radius: 3px;
+              border: 1px solid white;
+              transform: rotate(${-vehicle.heading}deg);
+            ">
+              #${id}
+            </div>
+          </div>
+        `,
+        className: "drone-marker-div",
+        iconSize: [34, 34],
+        iconAnchor: [17, 17]
+      });
 
-  // 3. Update Waypoints on the Map (Markers and Polyline)
+      if (!droneMarkersRef.current[id]) {
+        droneMarkersRef.current[id] = L.marker([vehicle.latitude, vehicle.longitude], { icon: droneIcon }).addTo(map);
+        
+        // Auto-center map if it's the first time placing the active drone
+        if (isActive) {
+          map.setView([vehicle.latitude, vehicle.longitude], map.getZoom());
+        }
+      } else {
+        droneMarkersRef.current[id].setLatLng([vehicle.latitude, vehicle.longitude]);
+        droneMarkersRef.current[id].setIcon(droneIcon);
+      }
+    });
+
+  }, [vehicles, activeVehicleId]);
+
+  // 3. Render Waypoint Markers & Paths
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    // Clear old waypoint markers
     wpMarkersRef.current.forEach((m) => m.remove());
     wpMarkersRef.current = [];
 
-    // Create new waypoint markers
     waypoints.forEach((wp, index) => {
       const isSelected = index === selectedWpIndex;
-      
-      // Determine colors based on command type
-      let markerColor = "#a855f7"; // purple (WAYPOINT)
+      let markerColor = "#a855f7"; 
       let labelText = (index + 1).toString();
+      
       if (wp.command === "TAKEOFF") {
-        markerColor = "#10b981"; // green
+        markerColor = "#10b981"; 
         labelText = "🚀";
       } else if (wp.command === "RTL") {
-        markerColor = "#ef4444"; // red
+        markerColor = "#ef4444"; 
         labelText = "🏠";
       }
 
@@ -200,16 +239,14 @@ export const FlightMap: React.FC<MapProps> = ({
 
       const marker = L.marker([wp.latitude, wp.longitude], {
         icon: wpIcon,
-        draggable: wp.command !== "RTL" // RTL target is typically auto-calculated as home by autopilot, or just placeable
+        draggable: wp.command !== "RTL"
       }).addTo(map);
 
-      // Selected waypoint index click
       marker.on("click", (e) => {
-        L.DomEvent.stopPropagation(e); // prevent map background click from clearing selection
+        L.DomEvent.stopPropagation(e);
         onSelectWp(index);
       });
 
-      // Drag event handlers
       marker.on("dragend", () => {
         const newLatLng = marker.getLatLng();
         const updatedWps = [...wpsStateRef.current];
@@ -224,19 +261,15 @@ export const FlightMap: React.FC<MapProps> = ({
       wpMarkersRef.current.push(marker);
     });
 
-    // Draw Polyline connecting waypoints
     if (polylineRef.current) {
       polylineRef.current.remove();
       polylineRef.current = null;
     }
 
     if (waypoints.length > 0) {
-      // Connect all waypoints with lines
       const coords = waypoints.map((wp) => [wp.latitude, wp.longitude] as [number, number]);
-      
-      // If the last waypoint is RTL, we draw line back to the takeoff point (which is usually the home position / waypoint 0)
       if (waypoints[waypoints.length - 1].command === "RTL" && coords.length > 1) {
-        coords.push(coords[0]); // connect back to takeoff
+        coords.push(coords[0]);
       }
 
       polylineRef.current = L.polyline(coords, {
@@ -249,38 +282,65 @@ export const FlightMap: React.FC<MapProps> = ({
     }
   }, [waypoints, selectedWpIndex]);
 
-  // Handle auto-fit bounds button
+  // Center/Pan view to active drone
+  const locateActiveDrone = () => {
+    const map = mapRef.current;
+    if (!map || activeVehicleId === null) return;
+    
+    const activeDrone = vehicles[activeVehicleId];
+    if (activeDrone) {
+      map.setView([activeDrone.latitude, activeDrone.longitude], map.getZoom(), {
+        animate: true,
+        duration: 1.0
+      });
+    }
+  };
+
+  // Center/Pan view to fit all waypoints and drones
   const fitFlightBounds = () => {
     const map = mapRef.current;
     if (!map) return;
 
-    const points: L.LatLngExpression[] = [[droneLat, droneLon]];
+    const points: L.LatLngExpression[] = [];
+    Object.values(vehicles).forEach((v) => {
+      points.push([v.latitude, v.longitude]);
+    });
     waypoints.forEach((wp) => {
       points.push([wp.latitude, wp.longitude]);
     });
 
-    const bounds = L.latLngBounds(points);
-    map.fitBounds(bounds, { padding: [50, 50] });
+    if (points.length > 0) {
+      const bounds = L.latLngBounds(points);
+      map.fitBounds(bounds, { padding: [80, 80] });
+    }
   };
 
   return (
-    <div className="relative w-full h-400 bg-gray-900 border border-gray-700 rounded-lg overflow-hidden shadow-lg">
-      {/* Map Element */}
+    <div className="fullscreen-map-container">
+      {/* Map Target Container */}
       <div ref={mapContainerRef} className="w-full h-full z-0" />
 
-      {/* Map overlay controls */}
-      <div className="absolute top-2 right-2 z-400 flex flex-col gap-2">
+      {/* Floating Map Panel Controls (QGC Style) */}
+      <div className="absolute top-24 left-4 z-400 flex flex-col gap-2.5">
+        <button
+          onClick={locateActiveDrone}
+          disabled={activeVehicleId === null}
+          className="btn-map-control"
+          title="Locate Active Drone"
+        >
+          🎯 Locate Drone
+        </button>
         <button
           onClick={fitFlightBounds}
-          className="bg-gray-800 hover:bg-gray-700 text-white font-semibold py-1-5 px-3 rounded shadow text-xs border border-gray-600 transition flex items-center gap-1"
+          className="btn-map-control"
           title="Zoom to Fit Mission"
         >
-          🔍 Fit Flight
+          🔍 Fit Bounds
         </button>
       </div>
 
-      <div className="absolute bottom-2 left-2 z-400 bg-gray-900-90 text-gray-400 font-mono text-xxs p-1-5 rounded border border-gray-700 backdrop-blur-sm pointer-events-none">
-        💡 Double-click Map to Add Waypoint • Drag items to move
+      <div className="absolute bottom-6 left-4 z-400 bg-gray-950-90 text-gray-400 font-mono text-xxs p-2 rounded border border-gray-800 backdrop-blur-sm pointer-events-none shadow-lg">
+        💡 Double-click Map to Add Waypoint • Drag items to move • Selected Drone highlighted in Green
       </div>
     </div>
   );
