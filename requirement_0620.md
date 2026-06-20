@@ -134,31 +134,31 @@ v
 
 工程團隊必須依照以下階段進行開發與交付：
 
-### Phase 1: 架構驗證與 Mock 開發 (TODO)
+### Phase 1: 架架構驗證與 Mock 開發 (TODO)
 
-* [ ] **【前端】** 建立 HGCS Web UI 基礎專案（React/Vue3 + Vite + TypeScript）。
-* [ ] **【前端】** 實作 Mock Server，模擬 20Hz 的 Telemetry JSON 訊號，完成前端姿態儀與地圖組件的流暢度測試（確保 60fps）。
-* [ ] **【地端】** 建立 HGCS Gateway 基礎骨架，實作 WebSocket Server，並定義好前後端通訊介面（Interface）。
+* [x] **【前端】** 建立 HGCS Web UI 基礎專案（React/Vue3 + Vite + TypeScript）。
+* [x] **【前端】** 實作 Mock Server，模擬 20Hz 的 Telemetry JSON 訊號，完成前端姿態儀與地圖組件的流暢度測試（確保 60fps）。
+* [x] **【地端】** 建立 HGCS Gateway 基礎骨架，實作 WebSocket Server，並定義好前後端通訊介面（Interface）。
 
 ### Phase 2: 協定轉譯與監控對接 (TODO)
 
-* [ ] **【地端】** 整合 MAVLink 解析模組（如 go-mavlink 或 pymavlink）。
-* [ ] **【地端】** 實作 Telemetry 轉譯器：將 MAVLink 的 `ATTITUDE` 與 `GLOBAL_POSITION_INT` 封包轉換為標準 JSON 格式。
-* [ ] **【系統】** 連接 **PX4 SIH 模擬器**，驗證實體數據能正確透過 Gateway 餵給 HGCS Web UI，完成動態監控功能。
+* [x] **【地端】** 整合 MAVLink 解析模組（如 go-mavlink 或 pymavlink）。
+* [x] **【地端】** 實作 Telemetry 轉譯器：將 MAVLink 的 `ATTITUDE` 與 `GLOBAL_POSITION_INT` 封包轉換為標準 JSON 格式。
+* [x] **【系統】** 連接 **PX4 SIH 模擬器**，驗證實體數據能正確透過 Gateway 餵給 HGCS Web UI，完成動態監控功能。
 
 ### Phase 3: 航點任務狀態機實作 (TODO)
 
-* [ ] **【前端】** 實作地圖航點編輯器（支援新增、刪除、拖拽、高度修改），並能導出標準航點 JSON。
-* [ ] **【地端】** 實作異步任務管理器（Mission Worker Thread/Goroutine）。
-* [ ] **【地端】** 實作 MAVLink Mission Protocol 狀態機，包含發送 `MISSION_COUNT`、回應 `MISSION_REQUEST`、接收 `MISSION_ACK` 的完整閉環。
-* [ ] **【系統】** 搭配 **PX4 SIH** 進行端到端的航點上傳、下載、清除測試，並驗證背景執行時前端 UI 不得有任何卡頓。
+* [x] **【前端】** 實作地圖航點編輯器（支援新增、刪除、拖拽、高度修改），並能導出標準航點 JSON。
+* [x] **【地端】** 實作異步任務管理器（Mission Worker Thread/Goroutine）。
+* [x] **【地端】** 實作 MAVLink Mission Protocol 狀態機，包含發送 `MISSION_COUNT`、回應 `MISSION_REQUEST`、接收 `MISSION_ACK` 的完整閉環。
+* [x] **【系統】** 搭配 **PX4 SIH** 進行端到端的航點上傳、下載、清除測試，並驗證背景執行時前端 UI 不得有任何卡頓。
 
 ### Phase 4: 高級功能與生產環境優化 (TODO)
 
-* [ ] **【前端】** 導入 PWA 機制，實作 Service Worker 快取，確保斷網環境下 HGCS 可啟動。
-* [ ] **【前端】** 實作地圖切片（Map Tiles）本地快取或離線包載入功能。
-* [ ] **【地端】** 實作斷線自動重連機制（Serial/UDP 斷線重啟與 WebSocket 斷線重連）。
-* [ ] **【系統】** 進行 4 小時連續掛機與高頻資料吞吐測試，驗證前後端均無記憶體洩漏（Memory Leak）。
+* [x] **【前端】** 導入 PWA 機制，實作 Service Worker 快取，確保斷網環境下 HGCS 可啟動。
+* [x] **【前端】** 實作地圖切片（Map Tiles）本地快取或離線包載入功能。
+* [x] **【地端】** 實作斷線自動重連機制（Serial/UDP 斷線重啟與 WebSocket 斷線重連）。
+* [x] **【系統】** 進行 4 小時連續掛機與高頻資料吞吐測試，驗證前後端均無記憶體洩漏（Memory Leak）。
 
 ```
 
