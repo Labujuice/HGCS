@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { PFD } from "./components/PFD";
 import { FlightMap } from "./components/Map";
 import type { Waypoint, MapVehicle } from "./components/Map";
+import { generateLawnmowerPath } from "./utils/surveyGenerator";
 import {
   Play,
   Square,
@@ -118,6 +119,32 @@ function App() {
     [id: number]: Waypoint[];
   }>({});
   const [selectedWpIndex, setSelectedWpIndex] = useState<number | null>(null);
+
+  // ── Mission 3 Survey & Edit Modes ──────────────────────────────
+  const [editMode, setEditMode] = useState<"none" | "waypoint" | "survey">("none");
+  const [vehicleSurveyPoints, setVehicleSurveyPoints] = useState<{
+    [id: number]: Array<{ latitude: number; longitude: number }>;
+  }>({});
+  const [surveySpacing, setSurveySpacing] = useState<number>(20); // in meters
+  const [surveyAngle, setSurveyAngle] = useState<number>(0); // in degrees
+  const [surveyAltitude, setSurveyAltitude] = useState<number>(50); // in meters
+  const [surveyReverse, setSurveyReverse] = useState<boolean>(false);
+
+  const surveyPolygonPoints = activeVehicleId !== null ? vehicleSurveyPoints[activeVehicleId] || [] : [];
+  const handleSurveyPointsChange = (pts: Array<{ latitude: number; longitude: number }>) => {
+    if (activeVehicleId !== null) {
+      setVehicleSurveyPoints((prev) => ({ ...prev, [activeVehicleId]: pts }));
+    }
+  };
+
+  const surveyGridPoints = useMemo(() => {
+    return generateLawnmowerPath(
+      surveyPolygonPoints,
+      surveySpacing,
+      surveyAngle,
+      surveyReverse
+    );
+  }, [surveyPolygonPoints, surveySpacing, surveyAngle, surveyReverse]);
 
   // ── Mission upload statuses ───────────────────────────────────
   const [missionStatuses, setMissionStatuses] = useState<{
@@ -743,12 +770,46 @@ function App() {
   // ═════════════════════════════════════════════════════════════
   const sendMissionUpload = () => {
     if (activeVehicleId === null) return;
-    if (waypoints.length === 0) { alert("Please plan some waypoints first."); return; }
+    
+    // Combine ordinary waypoints and generated survey path points
+    let uploadWps = [...waypoints];
+    if (surveyGridPoints.length > 0) {
+      const surveyWps: Waypoint[] = surveyGridPoints.map((pt) => ({
+        command: "WAYPOINT",
+        latitude: pt.latitude,
+        longitude: pt.longitude,
+        altitude: surveyAltitude,
+        hold_time: 0,
+      }));
+
+      if (uploadWps.length === 0) {
+        const firstPt = surveyWps[0];
+        uploadWps = [
+          { command: "TAKEOFF", latitude: firstPt.latitude, longitude: firstPt.longitude, altitude: surveyAltitude },
+          ...surveyWps,
+          { command: "RTL", latitude: firstPt.latitude, longitude: firstPt.longitude, altitude: 0 }
+        ];
+      } else {
+        const lastWp = uploadWps[uploadWps.length - 1];
+        if (lastWp.command === "RTL" || lastWp.command === "LAND") {
+          uploadWps.splice(uploadWps.length - 1, 0, ...surveyWps);
+        } else {
+          uploadWps.push(...surveyWps);
+        }
+      }
+    }
+
+    if (uploadWps.length === 0) {
+      alert("Please plan some waypoints or a survey area first.");
+      return;
+    }
+
     const mId = generateUUID();
     setMissionStatuses((prev) => ({
       ...prev,
       [activeVehicleId]: { mission_id: mId, state: "UPLOADING", progress: 0, message: "Initiating upload..." },
     }));
+
     if (isSimulating) {
       let prog = 0;
       const interval = setInterval(() => {
@@ -756,7 +817,7 @@ function App() {
         if (prog < 100) {
           setMissionStatuses((prev) => ({
             ...prev,
-            [activeVehicleId]: { mission_id: mId, state: "UPLOADING", progress: prog, message: `Uploading waypoint count: ${waypoints.length}` },
+            [activeVehicleId]: { mission_id: mId, state: "UPLOADING", progress: prog, message: `Uploading waypoint count: ${uploadWps.length}` },
           }));
         } else {
           clearInterval(interval);
@@ -764,14 +825,16 @@ function App() {
             ...prev,
             [activeVehicleId]: { mission_id: mId, state: "SUCCESS", progress: 100, message: "Simulated load completed." },
           }));
+          wpsRef.current[activeVehicleId] = uploadWps;
           const state = simControlsRef.current[activeVehicleId];
           if (state) state.targetWpIndex = 0;
         }
       }, 250);
       return;
     }
+
     if (!isConnected || !wsRef.current) { alert("Gateway not connected!"); return; }
-    wsRef.current.send(JSON.stringify({ action: "upload_mission", data: { vehicle_id: activeVehicleId, mission_id: mId, waypoints } }));
+    wsRef.current.send(JSON.stringify({ action: "upload_mission", data: { vehicle_id: activeVehicleId, mission_id: mId, waypoints: uploadWps } }));
   };
 
   // ═════════════════════════════════════════════════════════════
@@ -857,6 +920,10 @@ function App() {
             { latitude: lat, longitude: lng }
           )
         }
+        editMode={editMode}
+        surveyPolygonPoints={surveyPolygonPoints}
+        onSurveyPointsChange={handleSurveyPointsChange}
+        surveyGridPoints={surveyGridPoints}
       />
 
       {/* ── All floating UI overlays ───────────────────────── */}
@@ -1317,7 +1384,40 @@ function App() {
         {/* ══════════════════════════════════════════════════ */}
         {viewMode === "plan" && (
           <aside className="sidebar-right">
+            {/* Editor Mode Selector */}
             {activeVehicleId !== null && (
+              <div className="panel shadow" style={{ padding: "10px", minHeight: "auto", display: "flex", flexDirection: "column", gap: "6px" }}>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: "8px", textTransform: "uppercase", color: "var(--text-muted)", fontWeight: 700 }}>
+                  ⚙ Editor Plan Mode
+                </span>
+                <div style={{ display: "flex", gap: "6px" }}>
+                  <button
+                    onClick={() => { setEditMode("waypoint"); setSelectedWpIndex(null); }}
+                    className={`btn flex-1 py-1-5 text-xxs ${editMode === "waypoint" ? "btn-primary" : "btn-secondary"}`}
+                    style={{ fontWeight: 700 }}
+                  >
+                    📍 Waypoint
+                  </button>
+                  <button
+                    onClick={() => { setEditMode("survey"); setSelectedWpIndex(null); }}
+                    className={`btn flex-1 py-1-5 text-xxs ${editMode === "survey" ? "btn-primary" : "btn-secondary"}`}
+                    style={{ fontWeight: 700 }}
+                  >
+                    🗺️ Survey
+                  </button>
+                  <button
+                    onClick={() => { setEditMode("none"); setSelectedWpIndex(null); }}
+                    className={`btn flex-0 px-2 py-1-5 text-xxs ${editMode === "none" ? "btn-primary" : "btn-secondary"}`}
+                    title="Lock double click interaction"
+                  >
+                    🔒 Lock
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 1. Waypoint Editor (only if waypoint mode selected) */}
+            {activeVehicleId !== null && editMode !== "survey" && (
               <div className="panel shadow flex-1 min-h-300">
                 <h3 className="panel-header">📋 Waypoint Editor</h3>
 
@@ -1399,9 +1499,95 @@ function App() {
                     style={{ color: "var(--text-muted)", padding: 16, border: "1px dashed var(--border-color)", borderRadius: 6 }}>
                     <Layers style={{ width: 28, height: 28, marginBottom: 8, opacity: 0.3 }} />
                     No waypoint selected.<br />
-                    Double-click map to add waypoints.
+                    Select "Waypoint" mode above and double-click map to add.
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* 2. Survey Configurator (only if survey mode selected) */}
+            {activeVehicleId !== null && editMode === "survey" && (
+              <div className="panel shadow flex-1 min-h-300">
+                <h3 className="panel-header">🗺️ Survey Configurator</h3>
+                <div className="flex flex-col gap-2-5 flex-1">
+                  
+                  <div className="form-group">
+                    <label className="form-label" style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span>Line Spacing (Spacing)</span>
+                      <span style={{ color: "var(--color-primary)", fontWeight: "bold" }}>{surveySpacing} m</span>
+                    </label>
+                    <input
+                      type="range" min="10" max="100" step="5"
+                      value={surveySpacing}
+                      onChange={(e) => setSurveySpacing(Number(e.target.value))}
+                      style={{ width: "100%", accentColor: "var(--color-primary)" }}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label" style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span>Survey Angle</span>
+                      <span style={{ color: "var(--color-primary)", fontWeight: "bold" }}>{surveyAngle}°</span>
+                    </label>
+                    <input
+                      type="range" min="0" max="355" step="5"
+                      value={surveyAngle}
+                      onChange={(e) => setSurveyAngle(Number(e.target.value))}
+                      style={{ width: "100%", accentColor: "var(--color-primary)" }}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label" style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span>Survey Altitude</span>
+                      <span style={{ color: "var(--color-primary)", fontWeight: "bold" }}>{surveyAltitude} m</span>
+                    </label>
+                    <input
+                      type="range" min="10" max="120" step="5"
+                      value={surveyAltitude}
+                      onChange={(e) => setSurveyAltitude(Number(e.target.value))}
+                      style={{ width: "100%", accentColor: "var(--color-primary)" }}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "4px 0" }}>
+                    <span className="form-label" style={{ margin: 0 }}>Reverse Direction</span>
+                    <input
+                      type="checkbox"
+                      checked={surveyReverse}
+                      onChange={(e) => setSurveyReverse(e.target.checked)}
+                      style={{ accentColor: "var(--color-primary)", width: 14, height: 14 }}
+                    />
+                  </div>
+
+                  {surveyPolygonPoints.length > 0 ? (
+                    <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <div style={{ fontSize: "10px", fontFamily: "monospace", color: "var(--text-muted)", display: "flex", justifyContent: "space-between" }}>
+                        <span>Area Vertices:</span>
+                        <span style={{ color: "#fff" }}>{surveyPolygonPoints.length} points</span>
+                      </div>
+                      <div style={{ fontSize: "10px", fontFamily: "monospace", color: "var(--text-muted)", display: "flex", justifyContent: "space-between" }}>
+                        <span>Generated Path:</span>
+                        <span style={{ color: "#22c55e", fontWeight: "bold" }}>{surveyGridPoints.length} points</span>
+                      </div>
+                      <button
+                        onClick={() => handleSurveyPointsChange([])}
+                        className="btn btn-outline-danger w-full py-1.5 text-xxs"
+                        style={{ marginTop: "4px" }}
+                      >
+                        <Trash2 style={{ width: 12, height: 12 }} /> Clear Survey Area
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex flex-col justify-center items-center text-center text-xxs"
+                      style={{ color: "var(--text-muted)", padding: 16, border: "1px dashed var(--border-color)", borderRadius: 6, marginTop: "10px" }}>
+                      <Layers style={{ width: 28, height: 28, marginBottom: 8, opacity: 0.3 }} />
+                      No boundary points.<br />
+                      Double-click map to add survey polygon vertices (minimum 3 points).
+                    </div>
+                  )}
+
+                </div>
               </div>
             )}
 
@@ -1416,7 +1602,7 @@ function App() {
                     )}
                     <button onClick={clearWaypoints} className="btn btn-outline-danger flex-1 text-xxs">Clear Map</button>
                   </div>
-                  <button onClick={sendMissionUpload} disabled={waypoints.length === 0} className="btn btn-primary w-full py-2 text-xs">
+                  <button onClick={sendMissionUpload} disabled={waypoints.length === 0 && surveyGridPoints.length === 0} className="btn btn-primary w-full py-2 text-xs">
                     <Upload style={{ width: 14, height: 14 }} /> Upload to Drone #{activeVehicleId}
                   </button>
 

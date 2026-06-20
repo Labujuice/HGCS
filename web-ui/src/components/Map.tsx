@@ -45,6 +45,10 @@ interface MapProps {
     lat: number,
     lon: number
   ) => void;
+  editMode: "none" | "waypoint" | "survey";
+  surveyPolygonPoints: Array<{ latitude: number; longitude: number }>;
+  onSurveyPointsChange: (pts: Array<{ latitude: number; longitude: number }>) => void;
+  surveyGridPoints: Array<{ latitude: number; longitude: number }>;
 }
 
 export const FlightMap: React.FC<MapProps> = ({
@@ -56,6 +60,10 @@ export const FlightMap: React.FC<MapProps> = ({
   onSelectWp,
   isFlyView,
   onMapGuidedAction,
+  editMode,
+  surveyPolygonPoints,
+  onSurveyPointsChange,
+  surveyGridPoints,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -63,11 +71,25 @@ export const FlightMap: React.FC<MapProps> = ({
   const wpMarkersRef = useRef<L.Marker[]>([]);
   const polylineRef = useRef<L.Polyline | null>(null);
 
+  // Survey specific refs
+  const surveyMarkersRef = useRef<L.Marker[]>([]);
+  const surveyPolygonRef = useRef<L.Polygon | null>(null);
+  const surveyGridPolylineRef = useRef<L.Polyline | null>(null);
+
   const wpsStateRef = useRef<Waypoint[]>(waypoints);
   wpsStateRef.current = waypoints;
 
   const isFlyViewRef = useRef(isFlyView);
   isFlyViewRef.current = isFlyView;
+
+  const editModeRef = useRef(editMode);
+  editModeRef.current = editMode;
+
+  const surveyPointsRef = useRef(surveyPolygonPoints);
+  surveyPointsRef.current = surveyPolygonPoints;
+
+  const onSurveyPointsChangeRef = useRef(onSurveyPointsChange);
+  onSurveyPointsChangeRef.current = onSurveyPointsChange;
 
   const onMapGuidedActionRef = useRef(onMapGuidedAction);
   onMapGuidedActionRef.current = onMapGuidedAction;
@@ -105,10 +127,19 @@ export const FlightMap: React.FC<MapProps> = ({
     const handleResize = () => map.invalidateSize();
     window.addEventListener("resize", handleResize);
 
-    // Map click — guided action popup (Fly View) / deselect WP (Plan View)
-    map.on("click", (e) => {
+    // Map click — deselect WP (Plan View only, click does not trigger guided)
+    map.on("click", () => {
+      if (!isFlyViewRef.current) {
+        onSelectWp(null);
+      }
+    });
+
+    // Double-click → Guided action popup (Fly View) or Add element (Plan View)
+    map.on("dblclick", (e) => {
+      const { lat, lng } = e.latlng;
+
       if (isFlyViewRef.current) {
-        const { lat, lng } = e.latlng;
+        // Fly View: Popup Go-To / Orbit
         const popupEl = document.createElement("div");
         popupEl.style.cssText = "min-width:130px; padding:4px;";
         popupEl.innerHTML = `
@@ -129,32 +160,34 @@ export const FlightMap: React.FC<MapProps> = ({
           map.closePopup();
         });
       } else {
-        onSelectWp(null);
+        // Plan View: Add elements based on editMode
+        if (editModeRef.current === "waypoint") {
+          const currentWps = [...wpsStateRef.current];
+          let command: Waypoint["command"] = "WAYPOINT";
+          if (currentWps.length === 0) command = "TAKEOFF";
+          const newWp: Waypoint = {
+            command,
+            latitude: parseFloat(lat.toFixed(6)),
+            longitude: parseFloat(lng.toFixed(6)),
+            altitude: command === "TAKEOFF" ? 30.0 : 50.0,
+            hold_time: command === "WAYPOINT" ? 5 : undefined,
+          };
+          let nextWps = [...currentWps];
+          if (currentWps.length > 0 && currentWps[currentWps.length - 1].command === "RTL") {
+            nextWps.splice(currentWps.length - 1, 0, newWp);
+          } else {
+            nextWps.push(newWp);
+          }
+          onWaypointsChange(nextWps);
+          onSelectWp(nextWps.length - 1);
+        } else if (editModeRef.current === "survey") {
+          const updatedPts = [...surveyPointsRef.current, {
+            latitude: parseFloat(lat.toFixed(6)),
+            longitude: parseFloat(lng.toFixed(6)),
+          }];
+          onSurveyPointsChangeRef.current?.(updatedPts);
+        }
       }
-    });
-
-    // Double-click → add waypoint (Plan View only)
-    map.on("dblclick", (e) => {
-      if (isFlyViewRef.current) return;
-      const { lat, lng } = e.latlng;
-      const currentWps = [...wpsStateRef.current];
-      let command: "TAKEOFF" | "WAYPOINT" | "RTL" = "WAYPOINT";
-      if (currentWps.length === 0) command = "TAKEOFF";
-      const newWp: Waypoint = {
-        command,
-        latitude: parseFloat(lat.toFixed(6)),
-        longitude: parseFloat(lng.toFixed(6)),
-        altitude: command === "TAKEOFF" ? 30.0 : 50.0,
-        hold_time: command === "WAYPOINT" ? 5 : undefined,
-      };
-      let nextWps = [...currentWps];
-      if (currentWps.length > 0 && currentWps[currentWps.length - 1].command === "RTL") {
-        nextWps.splice(currentWps.length - 1, 0, newWp);
-      } else {
-        nextWps.push(newWp);
-      }
-      onWaypointsChange(nextWps);
-      onSelectWp(nextWps.length - 1);
     });
 
     mapRef.current = map;
@@ -346,6 +379,102 @@ export const FlightMap: React.FC<MapProps> = ({
       }).addTo(map);
     }
   }, [waypoints, selectedWpIndex]);
+
+  // ─── 3.1 Survey area & grid paths ─────────────────────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    // Clear existing survey boundary markers
+    surveyMarkersRef.current.forEach((m) => m.remove());
+    surveyMarkersRef.current = [];
+
+    // Clear existing polygon
+    if (surveyPolygonRef.current) {
+      surveyPolygonRef.current.remove();
+      surveyPolygonRef.current = null;
+    }
+
+    // Clear existing grid lines
+    if (surveyGridPolylineRef.current) {
+      surveyGridPolylineRef.current.remove();
+      surveyGridPolylineRef.current = null;
+    }
+
+    // 1. Draw boundary polygon & handles if points exist
+    if (surveyPolygonPoints.length > 0) {
+      const latlngs = surveyPolygonPoints.map(p => [p.latitude, p.longitude] as [number, number]);
+      
+      // Draw Polygon
+      if (surveyPolygonPoints.length >= 3) {
+        surveyPolygonRef.current = L.polygon(latlngs, {
+          color: "#c084fc",
+          fillColor: "#c084fc",
+          fillOpacity: 0.15,
+          weight: 2,
+          dashArray: "4, 6"
+        }).addTo(map);
+      }
+
+      // Draw boundary drag markers (only if not in Fly View)
+      if (!isFlyView) {
+        surveyPolygonPoints.forEach((pt, index) => {
+          // Custom small circle icon for boundary handles
+          const handleIcon = L.divIcon({
+            html: `
+              <div style="
+                width: 12px; height: 12px;
+                background-color: #3b82f6;
+                border: 2px solid white;
+                border-radius: 50%;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+                cursor: pointer;
+              "></div>
+            `,
+            className: "survey-handle-div",
+            iconSize: [12, 12],
+            iconAnchor: [6, 6]
+          });
+
+          const marker = L.marker([pt.latitude, pt.longitude], {
+            icon: handleIcon,
+            draggable: true
+          }).addTo(map);
+
+          // Click on point to remove
+          marker.on("click", (e) => {
+            L.DomEvent.stopPropagation(e);
+            const updated = [...surveyPointsRef.current];
+            updated.splice(index, 1);
+            onSurveyPointsChangeRef.current?.(updated);
+          });
+
+          marker.on("dragend", () => {
+            const ll = marker.getLatLng();
+            const updated = [...surveyPointsRef.current];
+            updated[index] = {
+              latitude: parseFloat(ll.lat.toFixed(6)),
+              longitude: parseFloat(ll.lng.toFixed(6))
+            };
+            onSurveyPointsChangeRef.current?.(updated);
+          });
+
+          surveyMarkersRef.current.push(marker);
+        });
+      }
+    }
+
+    // 2. Draw generated sweep lines (surveyGridPoints)
+    if (surveyGridPoints && surveyGridPoints.length > 0) {
+      const gridCoords = surveyGridPoints.map(p => [p.latitude, p.longitude] as [number, number]);
+      surveyGridPolylineRef.current = L.polyline(gridCoords, {
+        color: "#22c55e", // Bright green
+        weight: 3,
+        opacity: 0.9,
+        lineJoin: "round"
+      }).addTo(map);
+    }
+  }, [surveyPolygonPoints, surveyGridPoints, isFlyView]);
 
   // ─── 4. Center when active vehicle changes ─────────────────
   useEffect(() => {

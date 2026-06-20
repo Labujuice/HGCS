@@ -927,9 +927,11 @@ class Gateway:
         master = self.vehicle_masters.get(vehicle_id)
         if not master:
             return
+        # MAV_CMD_DO_REPOSITION: param1=speed (-1 for default), param2=reposition flags, param3=radius, param4=yaw (NaN to remain unchanged)
+        # lat and lon in degrees for COMMAND_LONG (float)
         master.mav.command_long_send(
             vehicle_id, 1, mavutil.mavlink.MAV_CMD_DO_REPOSITION, 0,
-            -1.0, 0.0, 0.0, 0.0, int(lat * 1e7), int(lon * 1e7), float(alt)
+            -1.0, 0.0, 0.0, float('nan'), float(lat), float(lon), float(alt)
         )
         print(f"⚙️ MAVLink reposition (Go To) sent to Vehicle #{vehicle_id}: lat={lat}, lon={lon}, alt={alt}")
 
@@ -937,9 +939,11 @@ class Gateway:
         master = self.vehicle_masters.get(vehicle_id)
         if not master:
             return
+        # MAV_CMD_DO_ORBIT: param1=radius (m), param2=speed (NaN for default), param3=yaw behavior, param4=reserved
+        # center lat and lon in degrees for COMMAND_LONG (float)
         master.mav.command_long_send(
             vehicle_id, 1, mavutil.mavlink.MAV_CMD_DO_ORBIT, 0,
-            float(radius), -1.0, 0.0, 0.0, int(lat * 1e7), int(lon * 1e7), float(alt)
+            float(radius), float('nan'), 0.0, 0.0, float(lat), float(lon), float(alt)
         )
         print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, alt={alt}, radius={radius}")
 
