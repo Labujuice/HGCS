@@ -165,6 +165,7 @@ class Gateway:
         lat = 0.0
         lon = 0.0
         alt = 0.0
+        msl_alt = 0.0
         groundspeed = 0.0
         airspeed = 0.0
         armed = False
@@ -241,6 +242,7 @@ class Gateway:
                     lat = msg.lat / 1e7
                     lon = msg.lon / 1e7
                     alt = msg.relative_alt / 1000.0 # relative to ground/home in meters
+                    msl_alt = msg.alt / 1000.0 # absolute altitude above MSL in meters
                     vx = msg.vx / 100.0
                     vy = msg.vy / 100.0
                     groundspeed = math.sqrt(vx*vx + vy*vy)
@@ -287,6 +289,7 @@ class Gateway:
                             "latitude": round(lat, 6),
                             "longitude": round(lon, 6),
                             "relative_altitude": round(alt, 1),
+                            "msl_altitude": round(msl_alt, 1),
                             "airspeed": round(airspeed, 1),
                             "groundspeed": round(groundspeed, 1)
                         }
@@ -633,6 +636,7 @@ class Gateway:
                             "latitude": round(lat, 6),
                             "longitude": round(lon, 6),
                             "relative_altitude": round(alt, 1),
+                            "msl_altitude": round(alt, 1),
                             "airspeed": round(airspeed, 1),
                             "groundspeed": round(groundspeed, 1)
                         }
@@ -897,12 +901,37 @@ class Gateway:
             1.0, 0, 0, 0, 0, 0, 0
         )
         time.sleep(0.5)
-        # Takeoff
+        
+        # Read vehicle's current Lat, Lon and MSL altitude from telemetry
+        lat = float('nan')
+        lon = float('nan')
+        msl_alt = 0.0
+        with self.telemetry_lock:
+            if vehicle_id in self.telemetries:
+                nav = self.telemetries[vehicle_id].get("navigation", {})
+                lat = nav.get("latitude", float('nan'))
+                lon = nav.get("longitude", float('nan'))
+                msl_alt = nav.get("msl_altitude", 0.0)
+                
+                # Check for invalid coordinates
+                if lat == 0.0:
+                    lat = float('nan')
+                if lon == 0.0:
+                    lon = float('nan')
+        
+        # Calculate target absolute MSL altitude if we have a valid MSL altitude.
+        # PX4 uses AMSL altitude for param7 when sending command_long takeoff in some cases,
+        # or relative altitude depending on implementation. But adding msl_alt handles both AMSL cases robustly.
+        target_alt = float(altitude)
+        if msl_alt != 0.0:
+            target_alt += msl_alt
+
+        # Takeoff command with correct coordinates (param5=lat, param6=lon) and absolute MSL height (param7)
         master.mav.command_long_send(
             vehicle_id, 1, mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(altitude)
+            0.0, 0.0, 0.0, 0.0, lat, lon, target_alt
         )
-        print(f"⚙️ MAVLink takeoff command sent to Vehicle #{vehicle_id} altitude={altitude}")
+        print(f"⚙️ MAVLink takeoff command sent to Vehicle #{vehicle_id} target_alt={target_alt} (rel={altitude}, msl={msl_alt}) lat={lat} lon={lon}")
 
     def _handle_land(self, vehicle_id: int):
         master = self.vehicle_masters.get(vehicle_id)
