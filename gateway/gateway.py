@@ -64,12 +64,14 @@ class Gateway:
             1: {
                 "lat": 24.7746, "lon": 121.0446, "alt": 0.0, "yaw": 90.0,
                 "pitch": 0.0, "roll": 0.0, "armed": False, "mode": "HOLD",
-                "battery_volts": 25.2, "target_wp_idx": 0, "waypoints": [], "flying": False
+                "battery_volts": 25.2, "target_wp_idx": 0, "waypoints": [], "flying": False,
+                "target_speed": 11.5
             },
             2: {
                 "lat": 24.7760, "lon": 121.0465, "alt": 0.0, "yaw": 180.0,
                 "pitch": 0.0, "roll": 0.0, "armed": False, "mode": "HOLD",
-                "battery_volts": 24.8, "target_wp_idx": 0, "waypoints": [], "flying": False
+                "battery_volts": 24.8, "target_wp_idx": 0, "waypoints": [], "flying": False,
+                "target_speed": 9.5
             }
         }
 
@@ -163,6 +165,7 @@ class Gateway:
         lat = 0.0
         lon = 0.0
         alt = 0.0
+        msl_alt = 0.0
         groundspeed = 0.0
         airspeed = 0.0
         armed = False
@@ -239,6 +242,7 @@ class Gateway:
                     lat = msg.lat / 1e7
                     lon = msg.lon / 1e7
                     alt = msg.relative_alt / 1000.0 # relative to ground/home in meters
+                    msl_alt = msg.alt / 1000.0 # absolute altitude above MSL in meters
                     vx = msg.vx / 100.0
                     vy = msg.vy / 100.0
                     groundspeed = math.sqrt(vx*vx + vy*vy)
@@ -285,6 +289,7 @@ class Gateway:
                             "latitude": round(lat, 6),
                             "longitude": round(lon, 6),
                             "relative_altitude": round(alt, 1),
+                            "msl_altitude": round(msl_alt, 1),
                             "airspeed": round(airspeed, 1),
                             "groundspeed": round(groundspeed, 1)
                         }
@@ -330,6 +335,9 @@ class Gateway:
                             state["mode"] = "TAKEOFF"
                             state["target_alt"] = cmd.get("altitude", 10.0)
                             print(f"[Mock #{vehicle_id}] Guided Takeoff requested. Target alt: {state['target_alt']}m")
+                        elif cmd_type == "change_speed":
+                            state["target_speed"] = cmd.get("speed", 10.0)
+                            print(f"[Mock #{vehicle_id}] Target speed set to: {state['target_speed']} m/s")
                         elif cmd_type == "land":
                             state["mode"] = "LAND"
                             print(f"[Mock #{vehicle_id}] Guided Land requested.")
@@ -415,7 +423,7 @@ class Gateway:
                     dist = math.sqrt(dx*dx + dy*dy)
                     
                     if dist > 0.00005:
-                        groundspeed = 11.5 if vid == 1 else 9.5
+                        groundspeed = state.get("target_speed", 11.5 if vid == 1 else 9.5)
                         airspeed = groundspeed
                         step_size = 0.00001
                         lat += (dy / dist) * step_size
@@ -447,7 +455,7 @@ class Gateway:
                     dist = math.sqrt(dx*dx + dy*dy)
                     
                     if dist > 0.00005:
-                        groundspeed = 11.5 if vid == 1 else 9.5
+                        groundspeed = state.get("target_speed", 11.5 if vid == 1 else 9.5)
                         airspeed = groundspeed
                         step_size = 0.00001
                         lat += (dy / dist) * step_size
@@ -490,7 +498,7 @@ class Gateway:
                     
                     if dist > 0.00005:
                         # Fly to orbit perimeter first
-                        groundspeed = 11.5 if vid == 1 else 9.5
+                        groundspeed = state.get("target_speed", 11.5 if vid == 1 else 9.5)
                         airspeed = groundspeed
                         step_size = 0.00001
                         lat += (dy / dist) * step_size
@@ -535,7 +543,7 @@ class Gateway:
                         dist = math.sqrt(dx*dx + dy*dy)
                         
                         if dist > 0.00005:
-                            groundspeed = 11.5 if vid == 1 else 9.5
+                            groundspeed = state.get("target_speed", 11.5 if vid == 1 else 9.5)
                             airspeed = groundspeed
                             step_size = 0.00001
                             lat += (dy / dist) * step_size
@@ -628,6 +636,7 @@ class Gateway:
                             "latitude": round(lat, 6),
                             "longitude": round(lon, 6),
                             "relative_altitude": round(alt, 1),
+                            "msl_altitude": round(alt, 1),
                             "airspeed": round(airspeed, 1),
                             "groundspeed": round(groundspeed, 1)
                         }
@@ -674,6 +683,8 @@ class Gateway:
                         self._handle_go_to(vehicle_id, task.get("latitude"), task.get("longitude"), task.get("altitude"))
                     elif task_type == "orbit":
                         self._handle_orbit(vehicle_id, task.get("latitude"), task.get("longitude"), task.get("altitude"), task.get("radius", 20.0))
+                    elif task_type == "change_speed":
+                        self._handle_change_speed(vehicle_id, task.get("speed", 10.0))
                     
             except queue.Empty:
                 pass
@@ -756,11 +767,16 @@ class Gateway:
                 lon = wp.get("longitude", 0.0)
                 alt = wp.get("altitude", 10.0)
                 hold_time = wp.get("hold_time", 0.0)
+                loiter_radius = wp.get("radius", 20.0) if cmd_str == "LOITER" else 0.0
                 
                 if cmd_str == "TAKEOFF":
                     cmd = mavutil.mavlink.MAV_CMD_NAV_TAKEOFF
                 elif cmd_str == "RTL":
                     cmd = mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH
+                elif cmd_str == "LAND":
+                    cmd = mavutil.mavlink.MAV_CMD_NAV_LAND
+                elif cmd_str == "LOITER":
+                    cmd = mavutil.mavlink.MAV_CMD_NAV_LOITER_UNLIM
                 else:
                     cmd = mavutil.mavlink.MAV_CMD_NAV_WAYPOINT
                     
@@ -771,7 +787,9 @@ class Gateway:
                     "current": 0,
                     "autocontinue": 1,
                     "p1": float(hold_time),
-                    "p2": 2.0, "p3": 0.0, "p4": 0.0,
+                    "p2": 2.0, 
+                    "p3": float(loiter_radius), 
+                    "p4": 0.0,
                     "x": int(lat * 1e7), "y": int(lon * 1e7), "z": float(alt)
                 })
                 
@@ -803,13 +821,24 @@ class Gateway:
                 pct = int(20 + (seq / count) * 70)
                 self._update_mission_status(vehicle_id, mission_id, "UPLOADING", pct, f"Sending waypoint {seq} of {count-1}")
                 
-                master.mav.mission_item_int_send(
-                    target_sys, target_comp,
-                    item["seq"], item["frame"], item["command"],
-                    item["current"], item["autocontinue"],
-                    item["p1"], item["p2"], item["p3"], item["p4"],
-                    item["x"], item["y"], item["z"]
-                )
+                if msg.get_type() == 'MISSION_REQUEST':
+                    # Respond with legacy float MISSION_ITEM
+                    master.mav.mission_item_send(
+                        target_sys, target_comp,
+                        item["seq"], item["frame"], item["command"],
+                        item["current"], item["autocontinue"],
+                        item["p1"], item["p2"], item["p3"], item["p4"],
+                        float(item["x"]) / 1e7, float(item["y"]) / 1e7, item["z"]
+                    )
+                else:
+                    # Respond with MISSION_ITEM_INT
+                    master.mav.mission_item_int_send(
+                        target_sys, target_comp,
+                        item["seq"], item["frame"], item["command"],
+                        item["current"], item["autocontinue"],
+                        item["p1"], item["p2"], item["p3"], item["p4"],
+                        item["x"], item["y"], item["z"]
+                    )
                 
                 if seq == count - 1:
                     break
@@ -872,12 +901,40 @@ class Gateway:
             1.0, 0, 0, 0, 0, 0, 0
         )
         time.sleep(0.5)
-        # Takeoff
+        
+        # Read vehicle's current Lat, Lon, MSL altitude and relative altitude from telemetry
+        lat = float('nan')
+        lon = float('nan')
+        msl_alt = 0.0
+        rel_alt = 0.0
+        with self.telemetry_lock:
+            if vehicle_id in self.telemetries:
+                nav = self.telemetries[vehicle_id].get("navigation", {})
+                lat = nav.get("latitude", float('nan'))
+                lon = nav.get("longitude", float('nan'))
+                msl_alt = nav.get("msl_altitude", 0.0)
+                rel_alt = nav.get("relative_altitude", 0.0)
+                
+                # Check for invalid coordinates
+                if lat == 0.0:
+                    lat = float('nan')
+                if lon == 0.0:
+                    lon = float('nan')
+        
+        # Calculate takeoff point MSL elevation: Home MSL = Current MSL - Current Relative
+        home_msl = msl_alt - rel_alt
+        
+        # Calculate target absolute MSL altitude if we have a valid MSL altitude.
+        target_alt = float(altitude)
+        if msl_alt != 0.0:
+            target_alt += home_msl
+
+        # Takeoff command with correct coordinates (param5=lat, param6=lon) and absolute MSL height (param7)
         master.mav.command_long_send(
             vehicle_id, 1, mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, float(altitude)
+            0.0, 0.0, 0.0, 0.0, lat, lon, target_alt
         )
-        print(f"⚙️ MAVLink takeoff command sent to Vehicle #{vehicle_id} altitude={altitude}")
+        print(f"⚙️ MAVLink takeoff command sent to Vehicle #{vehicle_id} target_alt={target_alt} (rel={altitude}, home_msl={home_msl}) lat={lat} lon={lon}")
 
     def _handle_land(self, vehicle_id: int):
         master = self.vehicle_masters.get(vehicle_id)
@@ -913,21 +970,78 @@ class Gateway:
         master = self.vehicle_masters.get(vehicle_id)
         if not master:
             return
-        master.mav.command_long_send(
-            vehicle_id, 1, mavutil.mavlink.MAV_CMD_DO_REPOSITION, 0,
-            -1.0, 0.0, 0.0, 0.0, int(lat * 1e7), int(lon * 1e7), float(alt)
+        
+        # Read current MSL altitude and relative altitude from telemetry
+        # to calculate the home point (takeoff ground) elevation as baseline.
+        msl_alt = 0.0
+        rel_alt = 0.0
+        with self.telemetry_lock:
+            if vehicle_id in self.telemetries:
+                nav = self.telemetries[vehicle_id].get("navigation", {})
+                msl_alt = nav.get("msl_altitude", 0.0)
+                rel_alt = nav.get("relative_altitude", 0.0)
+                
+        # Calculate takeoff point MSL elevation: Home MSL = Current MSL - Current Relative
+        home_msl = msl_alt - rel_alt
+        
+        target_alt = float(alt)
+        if msl_alt != 0.0:
+            target_alt += home_msl
+
+        # Use command_int_send with MAV_FRAME_GLOBAL_RELATIVE_ALT to prevent precision issues (causing negative notify)
+        master.mav.command_int_send(
+            vehicle_id, 1,
+            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+            mavutil.mavlink.MAV_CMD_DO_REPOSITION,
+            0, 0,
+            -1.0, 0.0, 0.0, float('nan'),
+            int(float(lat) * 1e7), int(float(lon) * 1e7), target_alt
         )
-        print(f"⚙️ MAVLink reposition (Go To) sent to Vehicle #{vehicle_id}: lat={lat}, lon={lon}, alt={alt}")
+        print(f"⚙️ MAVLink reposition (Go To) sent to Vehicle #{vehicle_id}: lat={lat}, lon={lon}, target_alt={target_alt} (rel={alt}, home_msl={home_msl})")
 
     def _handle_orbit(self, vehicle_id: int, lat: float, lon: float, alt: float, radius: float):
         master = self.vehicle_masters.get(vehicle_id)
         if not master:
             return
-        master.mav.command_long_send(
-            vehicle_id, 1, mavutil.mavlink.MAV_CMD_DO_ORBIT, 0,
-            float(radius), -1.0, 0.0, 0.0, int(lat * 1e7), int(lon * 1e7), float(alt)
+            
+        # Read current MSL altitude and relative altitude from telemetry
+        # to calculate the home point (takeoff ground) elevation as baseline.
+        msl_alt = 0.0
+        rel_alt = 0.0
+        with self.telemetry_lock:
+            if vehicle_id in self.telemetries:
+                nav = self.telemetries[vehicle_id].get("navigation", {})
+                msl_alt = nav.get("msl_altitude", 0.0)
+                rel_alt = nav.get("relative_altitude", 0.0)
+                
+        # Calculate takeoff point MSL elevation: Home MSL = Current MSL - Current Relative
+        home_msl = msl_alt - rel_alt
+        
+        target_alt = float(alt)
+        if msl_alt != 0.0:
+            target_alt += home_msl
+
+        # Use command_int_send with MAV_FRAME_GLOBAL_RELATIVE_ALT to prevent coordinate error and negative notify
+        master.mav.command_int_send(
+            vehicle_id, 1,
+            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+            mavutil.mavlink.MAV_CMD_DO_ORBIT,
+            0, 0,
+            float(radius), float('nan'), 0.0, 0.0,
+            int(float(lat) * 1e7), int(float(lon) * 1e7), target_alt
         )
-        print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, alt={alt}, radius={radius}")
+        print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, target_alt={target_alt} (rel={alt}, home_msl={home_msl}), radius={radius}")
+
+    def _handle_change_speed(self, vehicle_id: int, speed: float):
+        master = self.vehicle_masters.get(vehicle_id)
+        if not master:
+            return
+        # MAV_CMD_DO_CHANGE_SPEED: param1=1 (Groundspeed), param2=speed, param3=-1, param4=0
+        master.mav.command_long_send(
+            vehicle_id, 1, mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED, 0,
+            1.0, float(speed), -1.0, 0.0, 0.0, 0.0, 0.0
+        )
+        print(f"⚙️ MAVLink DO_CHANGE_SPEED command sent to Vehicle #{vehicle_id}: speed={speed} m/s")
 
     # --- STATIC HTTP SERVER & AUTO-SHUTDOWN UTILITIES ---
     def _run_http_server(self, directory: str, port: int):
@@ -1001,6 +1115,14 @@ class Gateway:
         await websocket.send(json.dumps({
             "type": "links_list",
             "data": list(self.active_links.keys())
+        }))
+        
+        # Send system info (such as mock mode status)
+        await websocket.send(json.dumps({
+            "type": "system_info",
+            "data": {
+                "use_mock": self.use_mock
+            }
         }))
         
         try:
@@ -1098,6 +1220,13 @@ class Gateway:
                             "vehicle_id": vehicle_id,
                             "mission_id": mission_id,
                             "waypoints": waypoints
+                        })
+                    elif action == "change_speed":
+                        speed = data.get("speed", 10.0)
+                        self.to_drone_queue.put({
+                            "type": "change_speed",
+                            "vehicle_id": vehicle_id,
+                            "speed": speed
                         })
                     else:
                         print(f"❓ Unknown action: {action}")

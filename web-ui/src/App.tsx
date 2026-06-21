@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { PFD } from "./components/PFD";
 import { FlightMap } from "./components/Map";
 import type { Waypoint, MapVehicle } from "./components/Map";
+import { generateLawnmowerPath } from "./utils/surveyGenerator";
 import {
   Play,
   Square,
@@ -70,6 +71,15 @@ function App() {
   });
   const [isConnected, setIsConnected] = useState(false);
   const [isSimulating, setIsSimulating] = useState(false);
+  const [useMock, setUseMock] = useState(false);
+
+  // ── Guided Action parameters ───────────────────────────────
+  const [guidedAltitude, setGuidedAltitude] = useState(10);
+  const [guidedRadius, setGuidedRadius] = useState(20);
+
+  // ── Active Flight controls ──────────────────────────────────
+  const [activeTargetSpeed, setActiveTargetSpeed] = useState(10);
+  const [activeTargetAlt, setActiveTargetAlt] = useState(30);
 
   // ── View mode: "fly" | "plan" ───────────────────────────────
   const [viewMode, setViewMode] = useState<"fly" | "plan">("fly");
@@ -109,6 +119,32 @@ function App() {
     [id: number]: Waypoint[];
   }>({});
   const [selectedWpIndex, setSelectedWpIndex] = useState<number | null>(null);
+
+  // ── Mission 3 Survey & Edit Modes ──────────────────────────────
+  const [editMode, setEditMode] = useState<"none" | "waypoint" | "survey">("none");
+  const [vehicleSurveyPoints, setVehicleSurveyPoints] = useState<{
+    [id: number]: Array<{ latitude: number; longitude: number }>;
+  }>({});
+  const [surveySpacing, setSurveySpacing] = useState<number>(20); // in meters
+  const [surveyAngle, setSurveyAngle] = useState<number>(0); // in degrees
+  const [surveyAltitude, setSurveyAltitude] = useState<number>(50); // in meters
+  const [surveyReverse, setSurveyReverse] = useState<boolean>(false);
+
+  const surveyPolygonPoints = activeVehicleId !== null ? vehicleSurveyPoints[activeVehicleId] || [] : [];
+  const handleSurveyPointsChange = (pts: Array<{ latitude: number; longitude: number }>) => {
+    if (activeVehicleId !== null) {
+      setVehicleSurveyPoints((prev) => ({ ...prev, [activeVehicleId]: pts }));
+    }
+  };
+
+  const surveyGridPoints = useMemo(() => {
+    return generateLawnmowerPath(
+      surveyPolygonPoints,
+      surveySpacing,
+      surveyAngle,
+      surveyReverse
+    );
+  }, [surveyPolygonPoints, surveySpacing, surveyAngle, surveyReverse]);
 
   // ── Mission upload statuses ───────────────────────────────────
   const [missionStatuses, setMissionStatuses] = useState<{
@@ -175,6 +211,49 @@ function App() {
     };
   }, []);
 
+  // Sync targets on active vehicle selection
+  useEffect(() => {
+    if (activeVehicleId !== null && activeVehicle) {
+      setActiveTargetAlt(Math.max(2, Math.round(activeVehicle.fullData.navigation.relative_altitude)));
+      const gs = activeVehicle.fullData.navigation.groundspeed;
+      setActiveTargetSpeed(gs > 0.5 ? Math.round(gs) : 10);
+    }
+  }, [activeVehicleId]);
+
+  const applyActiveGuidedControls = () => {
+    if (activeVehicleId === null || !activeVehicle) return;
+    const vId = activeVehicleId;
+    
+    if (isSimulating) {
+      const state = simControlsRef.current[vId];
+      if (state) {
+        state.targetSpeed = activeTargetSpeed;
+        state.targetAlt = activeTargetAlt;
+        state.mode = "GO_TO";
+        state.targetLat = state.lat;
+        state.targetLon = state.lon;
+        state.flying = true;
+      }
+    } else if (isConnected && wsRef.current) {
+      wsRef.current.send(JSON.stringify({
+        action: "change_speed",
+        data: {
+          vehicle_id: vId,
+          speed: activeTargetSpeed
+        }
+      }));
+      wsRef.current.send(JSON.stringify({
+        action: "go_to",
+        data: {
+          vehicle_id: vId,
+          latitude: activeVehicle.latitude,
+          longitude: activeVehicle.longitude,
+          altitude: activeTargetAlt
+        }
+      }));
+    }
+  };
+
   // ── Vertical speed ────────────────────────────────────────────
   useEffect(() => {
     if (activeVehicleId !== null && activeVehicle) {
@@ -208,6 +287,7 @@ function App() {
       targetLat?: number;
       targetLon?: number;
       targetAlt?: number;
+      targetSpeed?: number;
       orbitRadius?: number;
       orbitAngle?: number;
     };
@@ -222,6 +302,7 @@ function App() {
       batteryVolts: 25.2,
       targetWpIndex: 0,
       flying: false,
+      targetSpeed: 11.5,
     },
     2: {
       lat: 24.776,
@@ -233,6 +314,7 @@ function App() {
       batteryVolts: 24.8,
       targetWpIndex: 0,
       flying: false,
+      targetSpeed: 9.5,
     },
   });
 
@@ -342,7 +424,7 @@ function App() {
           const dx = homeLon - state.lon;
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist > 0.00005) {
-            groundspeed = vid === 1 ? 11.5 : 9.5;
+            groundspeed = state.targetSpeed || (vid === 1 ? 11.5 : 9.5);
             airspeed = groundspeed;
             const step = 0.00001;
             state.lat += (dy / dist) * step;
@@ -365,7 +447,7 @@ function App() {
           const dx = targetLon - state.lon;
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist > 0.00005) {
-            groundspeed = 11.5;
+            groundspeed = state.targetSpeed || 11.5;
             airspeed = groundspeed;
             const step = 0.00001;
             state.lat += (dy / dist) * step;
@@ -394,7 +476,7 @@ function App() {
           const dx = targetLonOnEdge - state.lon;
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist > 0.00005) {
-            groundspeed = 11.5;
+            groundspeed = state.targetSpeed || 11.5;
             airspeed = groundspeed;
             const step = 0.00001;
             state.lat += (dy / dist) * step;
@@ -435,7 +517,7 @@ function App() {
           const dx = targetLon - state.lon;
           const dist = Math.sqrt(dx * dx + dy * dy);
           if (dist > 0.00005) {
-            groundspeed = vid === 1 ? 11.5 : 9.5;
+            groundspeed = state.targetSpeed || (vid === 1 ? 11.5 : 9.5);
             airspeed = groundspeed;
             const step = 0.00001;
             state.lat += (dy / dist) * step;
@@ -565,6 +647,8 @@ function App() {
             setMissionStatuses((prev) => ({ ...prev, [vId]: payload.data }));
           } else if (payload.type === "links_list") {
             setGatewayLinks(payload.data || []);
+          } else if (payload.type === "system_info") {
+            setUseMock(payload.data.use_mock || false);
           }
         } catch (err) {
           console.warn("[WS] Error decoding message:", err);
@@ -572,6 +656,7 @@ function App() {
       };
       wsRef.current.onclose = () => {
         setIsConnected(false);
+        setUseMock(false);
         wsRef.current = null;
         setVehicles({});
         setActiveVehicleId(null);
@@ -590,6 +675,16 @@ function App() {
   // 3. SLIDE TO CONFIRM ACTIONS
   // ═════════════════════════════════════════════════════════════
   const initiateSliderAction = (type: string, label: string, data?: any) => {
+    let defaultAlt = 30;
+    if (activeVehicleId !== null && vehicles[activeVehicleId]) {
+      const v = vehicles[activeVehicleId];
+      if (v.fullData && v.fullData.navigation && typeof v.fullData.navigation.relative_altitude === 'number') {
+        // Use current relative altitude rounded to nearest meter, minimum 2m
+        defaultAlt = Math.max(2, Math.round(v.fullData.navigation.relative_altitude));
+      }
+    }
+    setGuidedAltitude(type === "takeoff" ? 10 : defaultAlt); // Default takeoff to 10m, others to current relative altitude
+    setGuidedRadius(20);
     setSliderAction({ type, label, data });
     setSliderValue(0);
   };
@@ -601,7 +696,12 @@ function App() {
   }) => {
     if (activeVehicleId === null) return;
     const vId = activeVehicleId;
-    const { type, data } = action;
+    const { type } = action;
+    const data = {
+      ...(action.data || {}),
+      altitude: guidedAltitude,
+      radius: guidedRadius,
+    };
 
     if (isSimulating) {
       const state = simControlsRef.current[vId];
@@ -610,7 +710,7 @@ function App() {
           state.armed = data.armed;
           if (!data.armed) { state.flying = false; state.alt = 0.0; }
         } else if (type === "takeoff") {
-          state.armed = true; state.flying = true; state.mode = "TAKEOFF"; state.targetAlt = 10.0;
+          state.armed = true; state.flying = true; state.mode = "TAKEOFF"; state.targetAlt = data.altitude || 10.0;
         } else if (type === "land") {
           state.mode = "LAND";
         } else if (type === "rtl") {
@@ -620,12 +720,14 @@ function App() {
         } else if (type === "go_to") {
           state.mode = "GO_TO"; state.flying = true;
           state.targetLat = data.latitude; state.targetLon = data.longitude;
-          state.targetAlt = state.alt > 1.0 ? state.alt : 10.0;
+          state.targetAlt = data.altitude || 10.0;
         } else if (type === "orbit") {
           state.mode = "ORBIT"; state.flying = true;
           state.targetLat = data.latitude; state.targetLon = data.longitude;
-          state.targetAlt = state.alt > 1.0 ? state.alt : 10.0;
-          state.orbitRadius = 20.0; state.orbitAngle = 0.0;
+          state.targetAlt = data.altitude || 10.0;
+          state.orbitRadius = data.radius || 20.0; state.orbitAngle = 0.0;
+        } else if (type === "change_speed") {
+          state.targetSpeed = data.speed;
         } else if (type === "set_mode") {
           state.mode = data.mode;
           if (data.mode === "MISSION" && state.armed) {
@@ -639,12 +741,13 @@ function App() {
     if (!isConnected || !wsRef.current) { alert("Gateway not connected!"); return; }
     const actionMap: Record<string, any> = {
       arm: { action: "arm", data: { vehicle_id: vId, armed: data.armed } },
-      takeoff: { action: "takeoff", data: { vehicle_id: vId, altitude: 10.0 } },
+      takeoff: { action: "takeoff", data: { vehicle_id: vId, altitude: data.altitude || 10.0 } },
       land: { action: "land", data: { vehicle_id: vId } },
       rtl: { action: "rtl", data: { vehicle_id: vId } },
       pause: { action: "pause", data: { vehicle_id: vId } },
-      go_to: { action: "go_to", data: { vehicle_id: vId, latitude: data.latitude, longitude: data.longitude, altitude: telemetry.navigation.relative_altitude > 1.0 ? telemetry.navigation.relative_altitude : 10.0 } },
-      orbit: { action: "orbit", data: { vehicle_id: vId, latitude: data.latitude, longitude: data.longitude, altitude: telemetry.navigation.relative_altitude > 1.0 ? telemetry.navigation.relative_altitude : 10.0, radius: 20.0 } },
+      go_to: { action: "go_to", data: { vehicle_id: vId, latitude: data.latitude, longitude: data.longitude, altitude: data.altitude || 10.0 } },
+      orbit: { action: "orbit", data: { vehicle_id: vId, latitude: data.latitude, longitude: data.longitude, altitude: data.altitude || 10.0, radius: data.radius || 20.0 } },
+      change_speed: { action: "change_speed", data: { vehicle_id: vId, speed: data.speed } },
       set_mode: { action: "set_mode", data: { vehicle_id: vId, mode: data.mode } },
     };
     if (actionMap[type]) wsRef.current.send(JSON.stringify(actionMap[type]));
@@ -675,12 +778,57 @@ function App() {
   // ═════════════════════════════════════════════════════════════
   const sendMissionUpload = () => {
     if (activeVehicleId === null) return;
-    if (waypoints.length === 0) { alert("Please plan some waypoints first."); return; }
+    
+    // Combine ordinary waypoints and generated survey path points
+    let uploadWps = [...waypoints];
+    if (surveyGridPoints.length > 0) {
+      const surveyWps: Waypoint[] = surveyGridPoints.map((pt) => ({
+        command: "WAYPOINT",
+        latitude: pt.latitude,
+        longitude: pt.longitude,
+        altitude: surveyAltitude,
+        hold_time: 0,
+      }));
+
+      if (uploadWps.length === 0) {
+        const firstPt = surveyWps[0];
+        uploadWps = [
+          { command: "TAKEOFF", latitude: firstPt.latitude, longitude: firstPt.longitude, altitude: surveyAltitude },
+          ...surveyWps,
+          { command: "RTL", latitude: firstPt.latitude, longitude: firstPt.longitude, altitude: 0 }
+        ];
+      } else {
+        const lastWp = uploadWps[uploadWps.length - 1];
+        if (lastWp.command === "RTL" || lastWp.command === "LAND") {
+          uploadWps.splice(uploadWps.length - 1, 0, ...surveyWps);
+        } else {
+          uploadWps.push(...surveyWps);
+        }
+      }
+    }
+
+    if (uploadWps.length === 0) {
+      alert("Please plan some waypoints or a survey area first.");
+      return;
+    }
+
+    // Ensure the first waypoint is TAKEOFF to pass flight stack safety checks (e.g. PX4 feasibility checker)
+    if (uploadWps.length > 0 && uploadWps[0].command !== "TAKEOFF") {
+      const firstWp = uploadWps[0];
+      uploadWps.unshift({
+        command: "TAKEOFF",
+        latitude: firstWp.latitude,
+        longitude: firstWp.longitude,
+        altitude: Math.max(10, firstWp.altitude),
+      });
+    }
+
     const mId = generateUUID();
     setMissionStatuses((prev) => ({
       ...prev,
       [activeVehicleId]: { mission_id: mId, state: "UPLOADING", progress: 0, message: "Initiating upload..." },
     }));
+
     if (isSimulating) {
       let prog = 0;
       const interval = setInterval(() => {
@@ -688,7 +836,7 @@ function App() {
         if (prog < 100) {
           setMissionStatuses((prev) => ({
             ...prev,
-            [activeVehicleId]: { mission_id: mId, state: "UPLOADING", progress: prog, message: `Uploading waypoint count: ${waypoints.length}` },
+            [activeVehicleId]: { mission_id: mId, state: "UPLOADING", progress: prog, message: `Uploading waypoint count: ${uploadWps.length}` },
           }));
         } else {
           clearInterval(interval);
@@ -696,14 +844,16 @@ function App() {
             ...prev,
             [activeVehicleId]: { mission_id: mId, state: "SUCCESS", progress: 100, message: "Simulated load completed." },
           }));
+          wpsRef.current[activeVehicleId] = uploadWps;
           const state = simControlsRef.current[activeVehicleId];
           if (state) state.targetWpIndex = 0;
         }
       }, 250);
       return;
     }
+
     if (!isConnected || !wsRef.current) { alert("Gateway not connected!"); return; }
-    wsRef.current.send(JSON.stringify({ action: "upload_mission", data: { vehicle_id: activeVehicleId, mission_id: mId, waypoints } }));
+    wsRef.current.send(JSON.stringify({ action: "upload_mission", data: { vehicle_id: activeVehicleId, mission_id: mId, waypoints: uploadWps } }));
   };
 
   // ═════════════════════════════════════════════════════════════
@@ -789,6 +939,10 @@ function App() {
             { latitude: lat, longitude: lng }
           )
         }
+        editMode={editMode}
+        surveyPolygonPoints={surveyPolygonPoints}
+        onSurveyPointsChange={handleSurveyPointsChange}
+        surveyGridPoints={surveyGridPoints}
       />
 
       {/* ── All floating UI overlays ───────────────────────── */}
@@ -938,18 +1092,20 @@ function App() {
             </div>
 
             {/* 2. Local Sim */}
-            <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid var(--border-color)", borderRadius: 6, padding: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 8, textTransform: "uppercase", color: "var(--text-muted)", fontWeight: 700 }}>2. Multi-Vehicle Simulator</span>
-              {!isSimulating ? (
-                <button onClick={startLocalSimulator} disabled={isConnected} className="btn btn-success w-full" style={{ fontSize: 10 }}>
-                  ▶ Launch Local Sim (2 UAVs)
-                </button>
-              ) : (
-                <button onClick={stopLocalSimulator} className="btn btn-danger w-full" style={{ fontSize: 10 }}>
-                  ■ Stop Simulator
-                </button>
-              )}
-            </div>
+            {(!isConnected || useMock) && (
+              <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid var(--border-color)", borderRadius: 6, padding: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 8, textTransform: "uppercase", color: "var(--text-muted)", fontWeight: 700 }}>2. Multi-Vehicle Simulator</span>
+                {!isSimulating ? (
+                  <button onClick={startLocalSimulator} disabled={isConnected} className="btn btn-success w-full" style={{ fontSize: 10 }}>
+                    ▶ Launch Local Sim (2 UAVs)
+                  </button>
+                ) : (
+                  <button onClick={stopLocalSimulator} className="btn btn-danger w-full" style={{ fontSize: 10 }}>
+                    ■ Stop Simulator
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* 3. MAVLink Bridge */}
             <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid var(--border-color)", borderRadius: 6, padding: 8, display: "flex", flexDirection: "column", gap: 6 }}>
@@ -1143,16 +1299,14 @@ function App() {
         {viewMode === "fly" && activeVehicleId !== null && (
           <>
             {/* Top-right PFD */}
-            <div className="pfd-hud-container">
-              <PFD
-                roll={telemetry.pose.roll}
-                pitch={telemetry.pose.pitch}
-                heading={telemetry.pose.heading}
-                altitude={telemetry.navigation.relative_altitude}
-                airspeed={telemetry.navigation.airspeed}
-                groundspeed={telemetry.navigation.groundspeed}
-              />
-            </div>
+            <PFD
+              roll={telemetry.pose.roll}
+              pitch={telemetry.pose.pitch}
+              heading={telemetry.pose.heading}
+              altitude={telemetry.navigation.relative_altitude}
+              airspeed={telemetry.navigation.airspeed}
+              groundspeed={telemetry.navigation.groundspeed}
+            />
 
             {/* Bottom telemetry bar */}
             <div className="bottom-telemetry-overlay">
@@ -1181,6 +1335,66 @@ function App() {
                 <span className="telemetry-value">{telemetry.pose.heading}°</span>
               </div>
             </div>
+
+            {/* Active Guided Controls Floating Panel */}
+            {activeVehicle && activeVehicle.armed && (
+              <div 
+                className="panel shadow"
+                style={{
+                  position: "absolute",
+                  right: "12px",
+                  top: "340px",
+                  width: "180px",
+                  zIndex: 390,
+                  background: "var(--bg-panel)",
+                  backdropFilter: "var(--blur-md)",
+                  border: "1px solid var(--border-color)",
+                  borderRadius: "var(--radius-md)",
+                  padding: "10px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "10px"
+                }}
+              >
+                <h4 style={{ margin: 0, fontSize: "10px", fontFamily: "monospace", textTransform: "uppercase", color: "var(--color-primary)", fontWeight: 700, borderBottom: "1px solid var(--border-color)", paddingBottom: "4px" }}>
+                  ⚡ Guided Tuning
+                </h4>
+                
+                <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                  <label style={{ fontSize: "9px", fontFamily: "monospace", color: "var(--text-muted)", display: "flex", justifyContent: "space-between" }}>
+                    <span>Target Speed</span>
+                    <span style={{ color: "#fff" }}>{activeTargetSpeed} m/s</span>
+                  </label>
+                  <input 
+                    type="range" min="1" max="20" step="0.5" 
+                    value={activeTargetSpeed} 
+                    onChange={(e) => setActiveTargetSpeed(Number(e.target.value))} 
+                    style={{ width: "100%", accentColor: "var(--color-primary)" }} 
+                  />
+                </div>
+
+                <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                  <label style={{ fontSize: "9px", fontFamily: "monospace", color: "var(--text-muted)", display: "flex", justifyContent: "space-between" }}>
+                    <span>Target Alt</span>
+                    <span style={{ color: "#fff" }}>{activeTargetAlt} m</span>
+                  </label>
+                  <input 
+                    type="range" min="2" max="100" step="1" 
+                    value={activeTargetAlt} 
+                    onChange={(e) => setActiveTargetAlt(Number(e.target.value))} 
+                    style={{ width: "100%", accentColor: "var(--color-primary)" }} 
+                  />
+                </div>
+
+                <button 
+                  onClick={applyActiveGuidedControls} 
+                  className="btn btn-primary w-full py-1 text-xxs"
+                  style={{ fontWeight: 700 }}
+                >
+                  Apply Changes
+                </button>
+              </div>
+            )}
           </>
         )}
 
@@ -1189,7 +1403,40 @@ function App() {
         {/* ══════════════════════════════════════════════════ */}
         {viewMode === "plan" && (
           <aside className="sidebar-right">
+            {/* Editor Mode Selector */}
             {activeVehicleId !== null && (
+              <div className="panel shadow" style={{ padding: "10px", minHeight: "auto", display: "flex", flexDirection: "column", gap: "6px" }}>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: "8px", textTransform: "uppercase", color: "var(--text-muted)", fontWeight: 700 }}>
+                  ⚙ Editor Plan Mode
+                </span>
+                <div style={{ display: "flex", gap: "6px" }}>
+                  <button
+                    onClick={() => { setEditMode("waypoint"); setSelectedWpIndex(null); }}
+                    className={`btn flex-1 py-1-5 text-xxs ${editMode === "waypoint" ? "btn-primary" : "btn-secondary"}`}
+                    style={{ fontWeight: 700 }}
+                  >
+                    📍 Waypoint
+                  </button>
+                  <button
+                    onClick={() => { setEditMode("survey"); setSelectedWpIndex(null); }}
+                    className={`btn flex-1 py-1-5 text-xxs ${editMode === "survey" ? "btn-primary" : "btn-secondary"}`}
+                    style={{ fontWeight: 700 }}
+                  >
+                    🗺️ Survey
+                  </button>
+                  <button
+                    onClick={() => { setEditMode("none"); setSelectedWpIndex(null); }}
+                    className={`btn flex-0 px-2 py-1-5 text-xxs ${editMode === "none" ? "btn-primary" : "btn-secondary"}`}
+                    title="Lock double click interaction"
+                  >
+                    🔒 Lock
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 1. Waypoint Editor (only if waypoint mode selected) */}
+            {activeVehicleId !== null && editMode !== "survey" && (
               <div className="panel shadow flex-1 min-h-300">
                 <h3 className="panel-header">📋 Waypoint Editor</h3>
 
@@ -1202,12 +1449,14 @@ function App() {
                       </span>
                     </div>
 
-                    <div className="form-group">
+                     <div className="form-group">
                       <label className="form-label">Command</label>
                       <select value={selectedWp.command} onChange={(e) => updateSelectedWpField("command", e.target.value)} className="form-select">
-                        <option value="TAKEOFF">TAKEOFF 🚀</option>
+                        <option value="TAKEOFF">TAKEOFF 🛫</option>
                         <option value="WAYPOINT">WAYPOINT 📍</option>
-                        <option value="RTL">RTL 🏠</option>
+                        <option value="LOITER">LOITER (ORBIT) 🔄</option>
+                        <option value="LAND">LAND 🛬</option>
+                        <option value="RTL">RTL 🏡</option>
                       </select>
                     </div>
 
@@ -1236,11 +1485,20 @@ function App() {
                       <div className="form-group">
                         <label className="form-label">Hold (s)</label>
                         <input type="number" value={selectedWp.hold_time || 0}
-                          disabled={selectedWp.command !== "WAYPOINT"}
+                          disabled={selectedWp.command !== "WAYPOINT" && selectedWp.command !== "LOITER"}
                           onChange={(e) => updateSelectedWpField("hold_time", parseInt(e.target.value) || 0)}
                           className="form-input" />
                       </div>
                     </div>
+
+                    {selectedWp.command === "LOITER" && (
+                      <div className="form-group">
+                        <label className="form-label">Loiter Radius (m)</label>
+                        <input type="number" value={selectedWp.radius || 20}
+                          onChange={(e) => updateSelectedWpField("radius", parseFloat(e.target.value) || 0)}
+                          className="form-input" />
+                      </div>
+                    )}
 
                     <div className="flex gap-2 mt-auto">
                       <button onClick={() => moveSelectedWp("up")} disabled={selectedWpIndex === 0} className="flex-1 btn btn-secondary text-xxs py-2">
@@ -1260,9 +1518,95 @@ function App() {
                     style={{ color: "var(--text-muted)", padding: 16, border: "1px dashed var(--border-color)", borderRadius: 6 }}>
                     <Layers style={{ width: 28, height: 28, marginBottom: 8, opacity: 0.3 }} />
                     No waypoint selected.<br />
-                    Double-click map to add waypoints.
+                    Select "Waypoint" mode above and double-click map to add.
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* 2. Survey Configurator (only if survey mode selected) */}
+            {activeVehicleId !== null && editMode === "survey" && (
+              <div className="panel shadow flex-1 min-h-300">
+                <h3 className="panel-header">🗺️ Survey Configurator</h3>
+                <div className="flex flex-col gap-2-5 flex-1">
+                  
+                  <div className="form-group">
+                    <label className="form-label" style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span>Line Spacing (Spacing)</span>
+                      <span style={{ color: "var(--color-primary)", fontWeight: "bold" }}>{surveySpacing} m</span>
+                    </label>
+                    <input
+                      type="range" min="10" max="100" step="5"
+                      value={surveySpacing}
+                      onChange={(e) => setSurveySpacing(Number(e.target.value))}
+                      style={{ width: "100%", accentColor: "var(--color-primary)" }}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label" style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span>Survey Angle</span>
+                      <span style={{ color: "var(--color-primary)", fontWeight: "bold" }}>{surveyAngle}°</span>
+                    </label>
+                    <input
+                      type="range" min="0" max="355" step="5"
+                      value={surveyAngle}
+                      onChange={(e) => setSurveyAngle(Number(e.target.value))}
+                      style={{ width: "100%", accentColor: "var(--color-primary)" }}
+                    />
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label" style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span>Survey Altitude</span>
+                      <span style={{ color: "var(--color-primary)", fontWeight: "bold" }}>{surveyAltitude} m</span>
+                    </label>
+                    <input
+                      type="range" min="10" max="120" step="5"
+                      value={surveyAltitude}
+                      onChange={(e) => setSurveyAltitude(Number(e.target.value))}
+                      style={{ width: "100%", accentColor: "var(--color-primary)" }}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, padding: "4px 0" }}>
+                    <span className="form-label" style={{ margin: 0 }}>Reverse Direction</span>
+                    <input
+                      type="checkbox"
+                      checked={surveyReverse}
+                      onChange={(e) => setSurveyReverse(e.target.checked)}
+                      style={{ accentColor: "var(--color-primary)", width: 14, height: 14 }}
+                    />
+                  </div>
+
+                  {surveyPolygonPoints.length > 0 ? (
+                    <div style={{ marginTop: "auto", display: "flex", flexDirection: "column", gap: "6px" }}>
+                      <div style={{ fontSize: "10px", fontFamily: "monospace", color: "var(--text-muted)", display: "flex", justifyContent: "space-between" }}>
+                        <span>Area Vertices:</span>
+                        <span style={{ color: "#fff" }}>{surveyPolygonPoints.length} points</span>
+                      </div>
+                      <div style={{ fontSize: "10px", fontFamily: "monospace", color: "var(--text-muted)", display: "flex", justifyContent: "space-between" }}>
+                        <span>Generated Path:</span>
+                        <span style={{ color: "#22c55e", fontWeight: "bold" }}>{surveyGridPoints.length} points</span>
+                      </div>
+                      <button
+                        onClick={() => handleSurveyPointsChange([])}
+                        className="btn btn-outline-danger w-full py-1.5 text-xxs"
+                        style={{ marginTop: "4px" }}
+                      >
+                        <Trash2 style={{ width: 12, height: 12 }} /> Clear Survey Area
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex-1 flex flex-col justify-center items-center text-center text-xxs"
+                      style={{ color: "var(--text-muted)", padding: 16, border: "1px dashed var(--border-color)", borderRadius: 6, marginTop: "10px" }}>
+                      <Layers style={{ width: 28, height: 28, marginBottom: 8, opacity: 0.3 }} />
+                      No boundary points.<br />
+                      Double-click map to add survey polygon vertices (minimum 3 points).
+                    </div>
+                  )}
+
+                </div>
               </div>
             )}
 
@@ -1272,10 +1616,12 @@ function App() {
                 <h3 className="panel-header">🛫 Mission Sync</h3>
                 <div className="flex flex-col gap-2">
                   <div className="flex gap-2 w-full">
-                    <button onClick={loadSampleMission} className="btn btn-secondary flex-1 text-xxs">Sample</button>
+                    {(!isConnected || useMock || isSimulating) && (
+                      <button onClick={loadSampleMission} className="btn btn-secondary flex-1 text-xxs">Sample</button>
+                    )}
                     <button onClick={clearWaypoints} className="btn btn-outline-danger flex-1 text-xxs">Clear Map</button>
                   </div>
-                  <button onClick={sendMissionUpload} disabled={waypoints.length === 0} className="btn btn-primary w-full py-2 text-xs">
+                  <button onClick={sendMissionUpload} disabled={waypoints.length === 0 && surveyGridPoints.length === 0} className="btn btn-primary w-full py-2 text-xs">
                     <Upload style={{ width: 14, height: 14 }} /> Upload to Drone #{activeVehicleId}
                   </button>
 
@@ -1313,8 +1659,39 @@ function App() {
         {/* SLIDE TO CONFIRM OVERLAY                          */}
         {/* ══════════════════════════════════════════════════ */}
         {sliderAction && (
-          <div className="slider-overlay-container">
-            <h4 className="slider-title">Confirm: {sliderAction.label}</h4>
+          <div className="slider-overlay-container" style={{ padding: "16px", minWidth: "260px" }}>
+            <h4 className="slider-title" style={{ marginBottom: "12px" }}>Confirm: {sliderAction.label}</h4>
+            
+            {/* Takeoff Altitude Slider */}
+            {sliderAction.type === "takeoff" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, width: "100%", marginBottom: 12, textAlign: "left" }}>
+                <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "monospace" }}>Takeoff Altitude: {guidedAltitude} m</span>
+                <input type="range" min="2" max="50" step="1" value={guidedAltitude} onChange={(e) => setGuidedAltitude(Number(e.target.value))} style={{ width: "100%", accentColor: "var(--color-primary)" }} />
+              </div>
+            )}
+
+            {/* Go-To Altitude Slider */}
+            {sliderAction.type === "go_to" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4, width: "100%", marginBottom: 12, textAlign: "left" }}>
+                <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "monospace" }}>Target Altitude: {guidedAltitude} m</span>
+                <input type="range" min="2" max="100" step="1" value={guidedAltitude} onChange={(e) => setGuidedAltitude(Number(e.target.value))} style={{ width: "100%", accentColor: "var(--color-primary)" }} />
+              </div>
+            )}
+
+            {/* Orbit / Loiter Radius & Altitude Sliders */}
+            {sliderAction.type === "orbit" && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%", marginBottom: 16, textAlign: "left" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "monospace" }}>Orbit Radius: {guidedRadius} m</span>
+                  <input type="range" min="5" max="100" step="1" value={guidedRadius} onChange={(e) => setGuidedRadius(Number(e.target.value))} style={{ width: "100%", accentColor: "var(--color-primary)" }} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "monospace" }}>Orbit Altitude: {guidedAltitude} m</span>
+                  <input type="range" min="2" max="100" step="1" value={guidedAltitude} onChange={(e) => setGuidedAltitude(Number(e.target.value))} style={{ width: "100%", accentColor: "var(--color-primary)" }} />
+                </div>
+              </div>
+            )}
+
             <div className="slide-confirm-wrapper">
               <div className="slide-confirm-text">Slide to Confirm</div>
               <div className="slide-confirm-fill" style={{ width: `${sliderValue}%` }} />
