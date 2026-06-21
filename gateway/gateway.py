@@ -967,25 +967,32 @@ class Gateway:
         master = self.vehicle_masters.get(vehicle_id)
         if not master:
             return
-        # MAV_CMD_DO_REPOSITION: param1=speed (-1 for default), param2=reposition flags, param3=radius, param4=yaw (NaN to remain unchanged)
-        # lat and lon in degrees for COMMAND_LONG (float)
-        master.mav.command_long_send(
-            vehicle_id, 1, mavutil.mavlink.MAV_CMD_DO_REPOSITION, 0,
-            -1.0, 0.0, 0.0, float('nan'), float(lat), float(lon), float(alt)
+        # Use command_int_send with MAV_FRAME_GLOBAL_RELATIVE_ALT to prevent precision issues (causing negative notify)
+        # and ensure altitude is correctly interpreted as relative to home.
+        master.mav.command_int_send(
+            vehicle_id, 1,
+            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+            mavutil.mavlink.MAV_CMD_DO_REPOSITION,
+            0, 0,
+            -1.0, 0.0, 0.0, float('nan'),
+            int(float(lat) * 1e7), int(float(lon) * 1e7), float(alt)
         )
-        print(f"⚙️ MAVLink reposition (Go To) sent to Vehicle #{vehicle_id}: lat={lat}, lon={lon}, alt={alt}")
+        print(f"⚙️ MAVLink reposition (Go To) sent to Vehicle #{vehicle_id}: lat={lat}, lon={lon}, alt={alt} (using MAV_FRAME_GLOBAL_RELATIVE_ALT)")
 
     def _handle_orbit(self, vehicle_id: int, lat: float, lon: float, alt: float, radius: float):
         master = self.vehicle_masters.get(vehicle_id)
         if not master:
             return
-        # MAV_CMD_DO_ORBIT: param1=radius (m), param2=speed (NaN for default), param3=yaw behavior, param4=reserved
-        # center lat and lon in degrees for COMMAND_LONG (float)
-        master.mav.command_long_send(
-            vehicle_id, 1, mavutil.mavlink.MAV_CMD_DO_ORBIT, 0,
-            float(radius), float('nan'), 0.0, 0.0, float(lat), float(lon), float(alt)
+        # Use command_int_send with MAV_FRAME_GLOBAL_RELATIVE_ALT to prevent coordinate error and negative notify
+        master.mav.command_int_send(
+            vehicle_id, 1,
+            mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
+            mavutil.mavlink.MAV_CMD_DO_ORBIT,
+            0, 0,
+            float(radius), float('nan'), 0.0, 0.0,
+            int(float(lat) * 1e7), int(float(lon) * 1e7), float(alt)
         )
-        print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, alt={alt}, radius={radius}")
+        print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, alt={alt}, radius={radius} (using MAV_FRAME_GLOBAL_RELATIVE_ALT)")
 
     def _handle_change_speed(self, vehicle_id: int, speed: float):
         master = self.vehicle_masters.get(vehicle_id)
