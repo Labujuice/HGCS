@@ -967,22 +967,46 @@ class Gateway:
         master = self.vehicle_masters.get(vehicle_id)
         if not master:
             return
+        
+        # Read current MSL altitude from telemetry to convert relative altitude to absolute AMSL altitude.
+        # PX4's MAV_CMD_DO_REPOSITION internally ignores coordinate frame relative flags and interprets the altitude as AMSL.
+        msl_alt = 0.0
+        with self.telemetry_lock:
+            if vehicle_id in self.telemetries:
+                nav = self.telemetries[vehicle_id].get("navigation", {})
+                msl_alt = nav.get("msl_altitude", 0.0)
+                
+        target_alt = float(alt)
+        if msl_alt != 0.0:
+            target_alt += msl_alt
+
         # Use command_int_send with MAV_FRAME_GLOBAL_RELATIVE_ALT to prevent precision issues (causing negative notify)
-        # and ensure altitude is correctly interpreted as relative to home.
         master.mav.command_int_send(
             vehicle_id, 1,
             mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
             mavutil.mavlink.MAV_CMD_DO_REPOSITION,
             0, 0,
             -1.0, 0.0, 0.0, float('nan'),
-            int(float(lat) * 1e7), int(float(lon) * 1e7), float(alt)
+            int(float(lat) * 1e7), int(float(lon) * 1e7), target_alt
         )
-        print(f"⚙️ MAVLink reposition (Go To) sent to Vehicle #{vehicle_id}: lat={lat}, lon={lon}, alt={alt} (using MAV_FRAME_GLOBAL_RELATIVE_ALT)")
+        print(f"⚙️ MAVLink reposition (Go To) sent to Vehicle #{vehicle_id}: lat={lat}, lon={lon}, target_alt={target_alt} (rel={alt}, msl={msl_alt})")
 
     def _handle_orbit(self, vehicle_id: int, lat: float, lon: float, alt: float, radius: float):
         master = self.vehicle_masters.get(vehicle_id)
         if not master:
             return
+            
+        # Read current MSL altitude from telemetry to convert relative altitude to absolute AMSL altitude
+        msl_alt = 0.0
+        with self.telemetry_lock:
+            if vehicle_id in self.telemetries:
+                nav = self.telemetries[vehicle_id].get("navigation", {})
+                msl_alt = nav.get("msl_altitude", 0.0)
+                
+        target_alt = float(alt)
+        if msl_alt != 0.0:
+            target_alt += msl_alt
+
         # Use command_int_send with MAV_FRAME_GLOBAL_RELATIVE_ALT to prevent coordinate error and negative notify
         master.mav.command_int_send(
             vehicle_id, 1,
@@ -990,9 +1014,9 @@ class Gateway:
             mavutil.mavlink.MAV_CMD_DO_ORBIT,
             0, 0,
             float(radius), float('nan'), 0.0, 0.0,
-            int(float(lat) * 1e7), int(float(lon) * 1e7), float(alt)
+            int(float(lat) * 1e7), int(float(lon) * 1e7), target_alt
         )
-        print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, alt={alt}, radius={radius} (using MAV_FRAME_GLOBAL_RELATIVE_ALT)")
+        print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, target_alt={target_alt} (rel={alt}, msl={msl_alt}), radius={radius}")
 
     def _handle_change_speed(self, vehicle_id: int, speed: float):
         master = self.vehicle_masters.get(vehicle_id)
