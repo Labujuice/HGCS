@@ -1,69 +1,97 @@
 # HGCS (HTML Ground Control Station) 🚀
 
-HGCS (HTML-based Ground Control Station) 是一個基於 Web 技術打造的輕量化地面控制系統，旨在全面平替 QGroundControl (QGC) 的核心狀態監控與任務編排功能。
+[繁體中文](./README.md) | [English](./README.md)
 
-本專案採用**雙層解耦架構**：將物理通訊、協議解析、航點上傳狀態機完全隔離於地端代理層（Gateway），而前端網頁層（Web UI）則專注於高性能、無狀態的姿態渲染與地圖任務規劃。
+HGCS (HTML-based Ground Control Station) 是一個基於 Web 技術打造的輕量化地面控制系統，旨在平替 QGroundControl (QGC) 的核心狀態監控與任務編排功能。本專案採用**雙層解耦架構**：將物理通訊、協議解析、航點上傳狀態機完全隔離於後端代理層（Gateway），而前端網頁層（Web UI）則專注於姿態渲染與地圖任務規劃。
+
+HGCS (HTML-based Ground Control Station) is a lightweight ground control system built on Web technologies, designed to replace the core status monitoring and mission planning capabilities of QGroundControl (QGC). This project utilizes a **decoupled architecture**: physically isolating communications, protocol parsing, and mission uploading state machines in the backend proxy (Gateway), while the frontend web application (Web UI) focuses on attitude rendering and map-based mission planning.
 
 ---
 
 ## 🌟 核心特色 (Core Features)
 
-1. **雙層解耦架構 (Decoupled Architecture)**
-   - **HGCS Gateway**：採用 Python 執行緒架構，流式解析 MAVLink 封包並轉譯為標準 JSON Telemetry 模型；背景執行 MAVLink Mission Protocol（Count -> Request -> Write -> ACK）狀態機，包含超時重傳與校驗機制。
-   - **HGCS Web UI**：基於 React + TypeScript + Vite，配合 HTML5 Canvas 實現高達 60fps 的 PFD 姿態儀，以及極其流暢的 Leaflet 互動地圖。
-2. **QGC 沉浸式滿版排版 (QGC Fullscreen Layout)**
-   - **滿版地圖背景**：捨棄傳統側邊欄區塊，地圖作為 100% 全螢幕背景，所有控制板面皆為玻璃透光懸浮視圖。
-   - **左側懸浮工具列**：整合了 Fly/Plan 視圖切換按鈕，以及一鍵起飛 (Takeoff)、降落 (Land)、返航 (RTL)、暫停懸停 (Pause) 等直達操作。
-   - **右側 Plan 編輯面板**：切換為 Plan 模式時，右側面板滑出，供任務航點編輯、高度與停滯時間參數調整，以及上傳/同步任務。
-   - **右上角 HUD 儀表**：將 Primary Flight Display (PFD) 姿態儀與航向羅盤以小巧圓形卡片懸浮在右上角。
-   - **底部實時遙測條**：在底部中間懸浮實時 Telemetry 數據，包含相對高度 (Alt)、垂直爬升率 (Climb Rate)、地速 (Ground Speed)、空速 (Airspeed) 及航 yaw 角。
-3. **頂部連線中心與多角色支援 (Comm Connections Dashboard)**
-   - 整合於頂部狀態列的 `Comm Links` 下拉選單中，完全隱藏轉接程式的 Websocket 細節。
-   - 支援 **UDP / TCP / SERIAL** 三種協定：
-     - **UDP**：支援 **Server** 角色（綁定並接聽飛控的遙測推播）或 **Client** 角色（向指定遠端 IP 進行主動發送）。
-     - **TCP**：支援 **Client** 角色（主動連接飛控 TCP 服務端，如 SITL 5760） or **Server** 角色（在本地開埠接聽飛控 TCP 客戶端連接）。
-     - **Serial**：指定連接串口裝置路徑及鮑率。
-4. **無人機動態標記與動態隨行資訊框 (Dynamic Follow Popup)**
-   - 無人機標記圖標隨 `heading` 數據進行實時轉向角度渲染。
-   - **隨行資訊框**：點擊無人機圖示後，展開懸浮小資訊框，即時顯示無人機 ID、Lat/Lon、Heading、Alt。當飛機在 20Hz 電腦控制下飛行移動時，小資訊框會**自動並平滑地隨行移動**，絕無任何畫面抖動。
-   - **快捷置中與跟隨**：地圖左側備有 `🔒 Auto-Center` / `🔓 Manual Pan` 切換按鈕與 `🎯 Center Active` 按鈕。手動拖曳地圖會自動解開置中跟隨鎖；點擊 auto-center 則能重鎖並將無人機維持在地圖正中間。
-5. **單一入口極簡啟動與自動生命週期 (Single Entry & Auto-Shutdown)**
-   - **內建網頁伺服器**：Python Gateway 內建靜態檔案伺服器，自動裝載前端編譯後的 `web-ui/dist/` 資料夾，無需依賴外部 Web Server。
-   - **自動喚起瀏覽器**：執行 Gateway 會自動啟動預設瀏覽器開啟網頁 UI。
-   - **自動連線與適應**：前端進入網頁後會自動與後端連線，且會自適應解析當前網址來連接 WebSocket，無需人為設定 IP。
-   - **無連線自動關閉**：當關閉所有瀏覽器網頁後，Gateway 監測到 5 秒內無任何 Web 連線即會自動結束運行，徹底關閉後端進程。
-6. **PWA 100% 離線啟動與地圖快取**
-   - 實作 Service Worker 快取，即使在完全斷網環境下也能順利啟動 HGCS，並支援 Leaflet OpenStreetMap 地圖切片 (Map Tiles) 本地離線快取，確保戶外飛測不中斷。
+### 1. 雙層解耦架構 (Decoupled Architecture)
+* **HGCS Gateway (後端代理)**:
+  * **中**: 採用 Python 執行緒架構，流式解析 MAVLink 封包並轉譯為標準 JSON Telemetry 模型；背景執行 MAVLink Mission Protocol（Count -> Request -> Write -> ACK）狀態機，包含超時重傳與校驗機制。
+  * **EN**: Built on a multi-threaded Python engine. It streams and decodes MAVLink packets into standardized JSON telemetry and runs the MAVLink Mission Protocol state machine in the background with timeout and retry mechanisms.
+* **HGCS Web UI (前端網頁)**:
+  * **中**: 基於 React + TypeScript + Vite，配合 HTML5 Canvas 實現高達 60fps 的 PFD 姿態儀，以及極其流暢的 Leaflet 互動地圖。
+  * **EN**: Developed using React, TypeScript, and Vite. Features a 60fps Primary Flight Display (PFD) rendered via HTML5 Canvas and a smooth Leaflet-based interactive map.
+
+### 2. QGC 沉浸式滿版排版 (QGC Fullscreen Layout)
+* **中**:
+  * 地圖作為 100% 全螢幕背景，所有控制板面皆為懸浮設計。
+  * 左側懸浮工具列整合一鍵起飛 (Takeoff)、降落 (Land)、返航 (RTL)、暫停懸停 (Pause) 等操作。
+  * 右側 Plan 面板可進行航點編輯、高度與停滯時間參數調整，並上傳/同步任務。
+* **EN**:
+  * The map serves as a 100% fullscreen background, with all panels hovering dynamically over it.
+  * The left overlay toolbar integrates single-click commands for Takeoff, Land, RTL, and Pause.
+  * The right Plan panel handles waypoint editing, altitude/hold-time adjustments, and uploading missions.
+
+### 3. 多角色連線中心 (Comm Connections Dashboard)
+* **中**: 支援 **UDP / TCP / SERIAL** 三種協定，可自由配置 Server/Client 角色連線至 PX4 SITL 模擬器或實體硬體。
+* **EN**: Supports **UDP / TCP / SERIAL** protocols, allowing flexible configuration of Server/Client roles to connect to PX4 SITL simulators or real vehicle hardware.
+
+### 4. 動態隨行資訊框與視角置中 (Dynamic Follow Popup & Auto-Center)
+* **中**: 點擊無人機 Marker 會展示懸浮資訊框，在飛行移動中會平滑跟隨。提供自動置中與手動解鎖機制，操作流暢不抖動。
+* **EN**: Clicking a drone icon displays a popup info box that smoothly follows the vehicle in real-time. Features an auto-center lock and manual pan override.
+
+### 5. 離線 PWA 與地圖快取 (PWA & Offline Map Caching)
+* **中**: 實作 Service Worker 快取，在完全斷網環境下也能順利啟動 HGCS，並支援 Leaflet OSM 本地離線快取，確保戶外飛測不中斷。
+* **EN**: Integrates Service Worker caching, enabling HGCS to load in offline environments, and supports Leaflet map tile caching for remote field operations.
+
+---
+
+## 🤖 AI 驅動開發宣言 (AI-Driven Development Initiative)
+
+> [!IMPORTANT]
+> **本專案的核心開發原則為：極力推廣使用 LLM Agent 進行開發，避免使用人力編碼。**
+> 
+> **Core Principle: We strongly advocate for codebases developed entirely by LLM Agents (e.g., Google Antigravity / Gemini) to minimize manual human coding.**
+
+### 中文說明：
+本專案為 **AI-Native** 開發的範例。我們相信隨著大語言模型代理（LLM Agents）的成熟，軟體開發的範式正在發生根本性的轉變。本專案絕大部分的核心邏輯、修復、優化和文件，均由 AI Agent 自動掃描專案現況、自主推理並直接寫入，人工僅扮演方向指引與最終驗證的角色。我們歡迎所有開源貢獻者使用 AI Agent 來共同協同開發本專案。
+
+### English Description:
+This project is an **AI-Native** development demonstration. We believe that with the maturity of Large Language Model Agents, the paradigm of software development is undergoing a fundamental shift. The vast majority of the core logic, bug fixes, performance optimizations, and documentation in this repository have been autonomously reasoned and implemented by AI Agents. Humans only provide direction and validation. We welcome all open-source contributors to collaborate using AI Agents.
+
+---
+
+## 📜 開源授權 (License)
+
+本專案採用 **[GPLv3 (GNU General Public License v3)](LICENSE)** 許可證。任何基於此專案的修改與衍生產品都必須保持開源並釋出原始碼，以維護開源社群的共享精神與開放性。詳情請參閱專案根目錄下的 [LICENSE](LICENSE) 檔案。
+
+This project is licensed under the **[GPLv3 (GNU General Public License v3)](LICENSE)**. Any modifications or derivative works of this project must remain open-source and make their source code available under the same terms to protect the collaborative spirit of the open-source community. For details, please refer to the [LICENSE](LICENSE) file in the root directory.
 
 ---
 
 ## 📂 目錄結構 (Directory Structure)
 
 * `gateway/`
-  * [gateway.py](file:///home/kenny/Git_KennySpace/HGCS/gateway/gateway.py)：地端代理層主程式。包含 MAVLink 解碼器、支援 TCP/UDP 各角色與 Serial 連接建立、航點協議狀態機與 WebSocket 伺服器。
+  * [gateway.py](gateway/gateway.py): 后端代理層主程序。包含 MAVLink 解碼、UDP/TCP/Serial 連接管理器、高精度 `COMMAND_INT` 指引控制、任務上傳狀態機與 WebSocket 伺服器。
+  * [gateway.py](gateway/gateway.py): Backend proxy main script. Features MAVLink decoding, connection managers, high-precision `COMMAND_INT` guided commands, mission upload state machine, and WebSocket server.
 * `web-ui/`
-  * [src/App.tsx](file:///home/kenny/Git_KennySpace/HGCS/web-ui/src/App.tsx)：控制台主頁面。管理連線配置、懸浮 HUD 與左側工具列、控制命令發送、航點編輯。
-  * [src/components/PFD.tsx](file:///home/kenny/Git_KennySpace/HGCS/web-ui/src/components/PFD.tsx)：利用 Canvas 渲染的 Primary Flight Display 姿態儀。
-  * [src/components/Map.tsx](file:///home/kenny/Git_KennySpace/HGCS/web-ui/src/components/Map.tsx)：懸浮式 Leaflet 互動地圖。支援自適應視窗縮放 (invalidatesSize)、動態隨行 popup、置中鎖定跟隨。
-  * [src/index.css](file:///home/kenny/Git_KennySpace/HGCS/web-ui/src/index.css)：Vanilla CSS 設計系統，提供精美暗黑科技風格 UI、PFD HUD、底部遙測條與佈局工具。
+  * [src/App.tsx](web-ui/src/App.tsx): 前端控制台主頁面。管理連線配置、懸浮 HUD 與左側工具列、控制命令發送、航點編輯。
+  * [src/App.tsx](web-ui/src/App.tsx): Frontend dashboard main controller. Manages links, PFD HUD overlays, left fly tool actions, command uploads, and waypoint parameters.
+  * [src/components/PFD.tsx](web-ui/src/components/PFD.tsx): Canvas 姿態儀。
+  * [src/components/Map.tsx](web-ui/src/components/Map.tsx): 懸浮式 Leaflet 互動地圖。
+  * [src/index.css](web-ui/src/index.css): Vanilla CSS 設計系統，提供精美暗黑科技風格 UI。
 
 ---
 
 ## 🛠️ 環境配置與依賴安裝 (Setup & Prerequisites)
 
 系統需安裝 **Node.js (>= 20)** 與 **Python (>= 3.10)**。
+Requires **Node.js (>= 20)** and **Python (>= 3.10)**.
 
-### 1. 前端網頁層
-進入網頁目錄並安裝依賴：
+### 1. 前端網頁層 (Frontend Web UI)
 ```bash
 cd web-ui
 npm install
 ```
 
-### 2. 地端代理層
-地端代理層需要 `websockets` (用於前端通訊) 和 `pymavlink` (用於飛控通訊)：
+### 2. 後端代理層 (Backend Gateway)
 ```bash
-# 安裝地端依賴 (若環境已安裝可跳過)
 pip3 install websockets pymavlink pyserial
 ```
 
@@ -71,65 +99,53 @@ pip3 install websockets pymavlink pyserial
 
 ## 🚀 啟動與使用說明 (Usage Guide)
 
-本系統支援**單一入口極簡啟動**。在生產環境下，您無需手動開啟多個伺服器，只需執行 Python 腳本即可一次開啟所有服務。
-
 ### 💡 快速模擬體驗（不需要任何實體飛控/硬體）
-如果您想體驗模擬的多機任務飛行：
-1. 啟動並預載模擬無人機：
+### 💡 Quick Mock Experience (No hardware needed)
+
+1. **啟動模擬服務 / Start Mock Service**:
    ```bash
    python3 gateway/gateway.py --mock
    ```
-2. 系統會**自動開啟瀏覽器**導向網頁介面 `http://127.0.0.1:8082`。
-3. 進入後，前端已**自動與地端代理完成連線**，畫面將自動切換至 **Fly** 視圖，並載入兩架處於暫停懸停狀態的模擬無人機（點擊即可在 Esri 世界衛星地圖上切換選取）。
-4. **編輯並上傳任務**：
-   - 點擊左側工具列的 **Plan**，右側會滑出任務編輯面板。
-   - 點擊 "Sample Mission" 快速載入預設航點，或在地圖上**雙擊滑鼠**自行新增航點，並能拖拽控制點修改高度。
-   - 點擊 **Upload to Drone #1** 將任務載入模擬器。
-5. **起飛與飛行控制**：
-   - 切換回左側工具列的 **Fly** 視圖。
-   - 點擊 **Arm** 並滑動確認解鎖。
-   - 點擊 **Takeoff** 並滑動確認起飛。無人機將開始平滑飛行。
-   - 點擊無人機 Marker 會彈出即時隨行資訊框，並穩定跟隨無人機移動而不抖動。
-   - 手動拖動地圖可解開視角鎖；點擊地圖左側的 **🔒 Auto-Center** 或 **🎯 Center Active** 可重新將地圖視角對齊飛機中心。
-6. **關閉與退出**：
-   - 體驗完畢後，直接**關閉瀏覽器分頁**。過 5 秒後，背景的 Python 服務檢測到無活躍連線便會**自動終止退出**，無需手動於終端機按下 Ctrl+C。
+2. **自動載入 / Auto Loading**:
+   系統會**自動開啟瀏覽器**導向網頁介面 `http://127.0.0.1:8082`。網頁會自動與後端連線。
+   The system will **automatically open your browser** to `http://127.0.0.1:8082`, which will auto-connect to the gateway.
+3. **規劃與起飛 / Mission Planning & Takeoff**:
+   - 進入 **Plan** 視圖，在衛星地圖上**雙擊滑鼠**自行新增航點，或點擊 "Sample Mission"。
+   - 點擊 **Upload to Drone** 上傳任務。
+   - 回到 **Fly** 視圖，點擊 **Arm** 並滑動解鎖，再點擊 **Takeoff** 滑動起飛，無人機將開始平滑飛行。
+   - 體驗完畢後直接**關閉瀏覽器分頁**，過 5 秒後後端服務偵測到無連線即會**自動結束退出**。
+   - Switch to **Plan** view, **double-click** the map to add waypoints, or select "Sample Mission".
+   - Click **Upload to Drone** to transfer.
+   - Switch to **Fly** view, click **Arm** and slide to unlock, then click **Takeoff** and slide to launch.
+   - When finished, **close the browser tab**. The gateway will automatically shut down after 5 seconds of inactivity.
 
 ---
 
 ### 🔌 連接真實載具 / PX4 SITL 模擬器
-1. **硬體/模擬器準備**：將真實飛控（如 Pixhawk）透過 USB 連接至電腦，或者於背景啟動 PX4 SITL 模擬器（預設會使用 UDP `14540`）。
-2. **啟動 Gateway**：
+### 🔌 Connecting to a Real Vehicle or PX4 SITL
+
+1. 啟動 PX4 SITL 模擬器（預設使用 UDP `14540`）或連接 Pixhawk 硬體。
+   Start PX4 SITL (defaults to UDP `14540`) or connect Pixhawk hardware.
+2. 啟動 Gateway:
    ```bash
    python3 gateway/gateway.py
    ```
-   *(預設將會開埠 WebSocket 8080 及 Web UI 服務 8082，並啟動瀏覽器)*
-3. **網頁連線與配置**：
-   - 瀏覽器打開後已自動連上本機代理（頂部狀態列會轉為綠色 `GATEWAY LINK`）。
-   - 點擊右上角 **Comm Links** 開啟設定面板。
-   - 在 **SPAWN MAVLINK BRIDGE** 卡片中設定如何接到您的飛機：
-     - **UDP Server** (QGC 預設)：Port 填 `14540`（用於 PX4 SITL 連接），點擊 **Add Bridge Connection**。
-     - **TCP Client**：IP 填 `127.0.0.1`，Port 填 `5760`，點擊 **Add Bridge Connection**。
-   - 建立連線後，無人機資訊將自動載入地圖，且 PFD 姿態儀會以 60fps 同步反應即時姿態與遙測數據。
+3. 在網頁右上角 **Comm Links** 面板中設定對接：
+   - **UDP Server** (對於 SITL): Port 填 `14540`，點擊 **Add Bridge Connection**。
+   - **TCP Client**: IP 填 `127.0.0.1`，Port 填 `5760`。
+   - In the **Comm Links** overlay panel, configure:
+     - **UDP Server** (for SITL): Port `14540`, click **Add Bridge Connection**.
+     - **TCP Client**: Host `127.0.0.1`, Port `5760`.
 
 ---
 
-### ⚙️ 進階命令列參數說明 (CLI Options)
-如果需要自訂啟動行為，可在執行 `gateway.py` 時傳入以下參數：
-- `--no-serve`：不要啟動靜態網頁伺服器（僅執行 WebSocket 代理，供本機開發配合 `npm run dev` 使用）。
-- `--serve-port <PORT>`：自訂靜態網頁服務 Port（預設為 `8082`）。
-- `--serve-dir <PATH>`：自訂靜態網頁資源的路徑（預設會自動定位至 `../web-ui/dist`）。
-- `--no-open`：啟動服務後不要自動開啟瀏覽器。
-- `--no-shutdown`：關閉網頁分頁後，不要自動結束 Python 後端服務。
-- `--shutdown-timeout <SECONDS>`：自訂斷線後自動結束的緩衝秒數（預設為 `5.0` 秒，以容忍網頁重新整理）。
-- `--port <PORT>`：自訂 WebSocket 服務的 Port（預設為 `8080`）。
-- `--host <IP>`：自訂 WebSocket 服務的主機監聽地址（預設為 `127.0.0.1`）。
+## 📈 PX4 SIH / SITL 驗證流程 (Verification Process)
 
----
-
-## 📈 PX4 SIH 閉環驗證流程 (Verification Process)
-
-1. 將 SYS_HITL 參數配置為 SIH 模式（Simulation-In-Hardware），重啟飛控。
+1. 將 SYS_HITL 參數配置為 SIH 模式（Simulation-In-Hardware），重載飛控。
+   Set SYS_HITL parameter to SIH mode and reboot the autopilot.
 2. 啟動 Gateway 連接實體飛控埠。
-3. 前端網頁點擊 Connect 成功後，手動搖晃飛控，確認 PFD 姿態儀能極速流暢反應 Roll/Pitch 變化（確認 60fps 刷新）。
-4. 上傳任務，確認 Web UI 收到 `SUCCESS` 回報，且沒有任何卡頓。
-5. 解鎖並切換至 Mission 模式，觀察飛機軌跡是否在 Map 上流暢同步移動，完成閉環驗證。
+   Start the gateway pointing to the autopilot link.
+3. 前端網頁點擊 Connect 成功後，手動搖晃飛控，確認 PFD 姿態儀能流暢反應 Roll/Pitch 變化（確認 60fps 刷新）。
+   Check that the PFD attitude gauge responds to hardware movement smoothly at 60fps.
+4. 上傳任務，解鎖並切換至 Mission 模式，觀察飛機軌跡是否在 Map 上流暢同步移動，完成閉環驗證。
+   Upload the mission, arm and change mode to Mission, and observe the drone trajectory on the map.
