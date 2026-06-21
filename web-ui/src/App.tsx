@@ -675,7 +675,15 @@ function App() {
   // 3. SLIDE TO CONFIRM ACTIONS
   // ═════════════════════════════════════════════════════════════
   const initiateSliderAction = (type: string, label: string, data?: any) => {
-    setGuidedAltitude(type === "takeoff" ? 10 : 30); // Default takeoff to 10m, loiter/go_to to 30m
+    let defaultAlt = 30;
+    if (activeVehicleId !== null && vehicles[activeVehicleId]) {
+      const v = vehicles[activeVehicleId];
+      if (v.fullData && v.fullData.navigation && typeof v.fullData.navigation.relative_altitude === 'number') {
+        // Use current relative altitude rounded to nearest meter, minimum 2m
+        defaultAlt = Math.max(2, Math.round(v.fullData.navigation.relative_altitude));
+      }
+    }
+    setGuidedAltitude(type === "takeoff" ? 10 : defaultAlt); // Default takeoff to 10m, others to current relative altitude
     setGuidedRadius(20);
     setSliderAction({ type, label, data });
     setSliderValue(0);

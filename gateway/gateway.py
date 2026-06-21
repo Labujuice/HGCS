@@ -902,16 +902,18 @@ class Gateway:
         )
         time.sleep(0.5)
         
-        # Read vehicle's current Lat, Lon and MSL altitude from telemetry
+        # Read vehicle's current Lat, Lon, MSL altitude and relative altitude from telemetry
         lat = float('nan')
         lon = float('nan')
         msl_alt = 0.0
+        rel_alt = 0.0
         with self.telemetry_lock:
             if vehicle_id in self.telemetries:
                 nav = self.telemetries[vehicle_id].get("navigation", {})
                 lat = nav.get("latitude", float('nan'))
                 lon = nav.get("longitude", float('nan'))
                 msl_alt = nav.get("msl_altitude", 0.0)
+                rel_alt = nav.get("relative_altitude", 0.0)
                 
                 # Check for invalid coordinates
                 if lat == 0.0:
@@ -919,19 +921,20 @@ class Gateway:
                 if lon == 0.0:
                     lon = float('nan')
         
+        # Calculate takeoff point MSL elevation: Home MSL = Current MSL - Current Relative
+        home_msl = msl_alt - rel_alt
+        
         # Calculate target absolute MSL altitude if we have a valid MSL altitude.
-        # PX4 uses AMSL altitude for param7 when sending command_long takeoff in some cases,
-        # or relative altitude depending on implementation. But adding msl_alt handles both AMSL cases robustly.
         target_alt = float(altitude)
         if msl_alt != 0.0:
-            target_alt += msl_alt
+            target_alt += home_msl
 
         # Takeoff command with correct coordinates (param5=lat, param6=lon) and absolute MSL height (param7)
         master.mav.command_long_send(
             vehicle_id, 1, mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0,
             0.0, 0.0, 0.0, 0.0, lat, lon, target_alt
         )
-        print(f"⚙️ MAVLink takeoff command sent to Vehicle #{vehicle_id} target_alt={target_alt} (rel={altitude}, msl={msl_alt}) lat={lat} lon={lon}")
+        print(f"⚙️ MAVLink takeoff command sent to Vehicle #{vehicle_id} target_alt={target_alt} (rel={altitude}, home_msl={home_msl}) lat={lat} lon={lon}")
 
     def _handle_land(self, vehicle_id: int):
         master = self.vehicle_masters.get(vehicle_id)
@@ -968,17 +971,22 @@ class Gateway:
         if not master:
             return
         
-        # Read current MSL altitude from telemetry to convert relative altitude to absolute AMSL altitude.
-        # PX4's MAV_CMD_DO_REPOSITION internally ignores coordinate frame relative flags and interprets the altitude as AMSL.
+        # Read current MSL altitude and relative altitude from telemetry
+        # to calculate the home point (takeoff ground) elevation as baseline.
         msl_alt = 0.0
+        rel_alt = 0.0
         with self.telemetry_lock:
             if vehicle_id in self.telemetries:
                 nav = self.telemetries[vehicle_id].get("navigation", {})
                 msl_alt = nav.get("msl_altitude", 0.0)
+                rel_alt = nav.get("relative_altitude", 0.0)
                 
+        # Calculate takeoff point MSL elevation: Home MSL = Current MSL - Current Relative
+        home_msl = msl_alt - rel_alt
+        
         target_alt = float(alt)
         if msl_alt != 0.0:
-            target_alt += msl_alt
+            target_alt += home_msl
 
         # Use command_int_send with MAV_FRAME_GLOBAL_RELATIVE_ALT to prevent precision issues (causing negative notify)
         master.mav.command_int_send(
@@ -989,23 +997,29 @@ class Gateway:
             -1.0, 0.0, 0.0, float('nan'),
             int(float(lat) * 1e7), int(float(lon) * 1e7), target_alt
         )
-        print(f"⚙️ MAVLink reposition (Go To) sent to Vehicle #{vehicle_id}: lat={lat}, lon={lon}, target_alt={target_alt} (rel={alt}, msl={msl_alt})")
+        print(f"⚙️ MAVLink reposition (Go To) sent to Vehicle #{vehicle_id}: lat={lat}, lon={lon}, target_alt={target_alt} (rel={alt}, home_msl={home_msl})")
 
     def _handle_orbit(self, vehicle_id: int, lat: float, lon: float, alt: float, radius: float):
         master = self.vehicle_masters.get(vehicle_id)
         if not master:
             return
             
-        # Read current MSL altitude from telemetry to convert relative altitude to absolute AMSL altitude
+        # Read current MSL altitude and relative altitude from telemetry
+        # to calculate the home point (takeoff ground) elevation as baseline.
         msl_alt = 0.0
+        rel_alt = 0.0
         with self.telemetry_lock:
             if vehicle_id in self.telemetries:
                 nav = self.telemetries[vehicle_id].get("navigation", {})
                 msl_alt = nav.get("msl_altitude", 0.0)
+                rel_alt = nav.get("relative_altitude", 0.0)
                 
+        # Calculate takeoff point MSL elevation: Home MSL = Current MSL - Current Relative
+        home_msl = msl_alt - rel_alt
+        
         target_alt = float(alt)
         if msl_alt != 0.0:
-            target_alt += msl_alt
+            target_alt += home_msl
 
         # Use command_int_send with MAV_FRAME_GLOBAL_RELATIVE_ALT to prevent coordinate error and negative notify
         master.mav.command_int_send(
@@ -1016,7 +1030,7 @@ class Gateway:
             float(radius), float('nan'), 0.0, 0.0,
             int(float(lat) * 1e7), int(float(lon) * 1e7), target_alt
         )
-        print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, target_alt={target_alt} (rel={alt}, msl={msl_alt}), radius={radius}")
+        print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, target_alt={target_alt} (rel={alt}, home_msl={home_msl}), radius={radius}")
 
     def _handle_change_speed(self, vehicle_id: int, speed: float):
         master = self.vehicle_masters.get(vehicle_id)
