@@ -804,6 +804,17 @@ function App() {
       return;
     }
 
+    // Ensure the first waypoint is TAKEOFF to pass flight stack safety checks (e.g. PX4 feasibility checker)
+    if (uploadWps.length > 0 && uploadWps[0].command !== "TAKEOFF") {
+      const firstWp = uploadWps[0];
+      uploadWps.unshift({
+        command: "TAKEOFF",
+        latitude: firstWp.latitude,
+        longitude: firstWp.longitude,
+        altitude: Math.max(10, firstWp.altitude),
+      });
+    }
+
     const mId = generateUUID();
     setMissionStatuses((prev) => ({
       ...prev,

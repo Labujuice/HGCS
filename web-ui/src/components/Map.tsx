@@ -79,6 +79,12 @@ export const FlightMap: React.FC<MapProps> = ({
   const wpsStateRef = useRef<Waypoint[]>(waypoints);
   wpsStateRef.current = waypoints;
 
+  const onWaypointsChangeRef = useRef(onWaypointsChange);
+  onWaypointsChangeRef.current = onWaypointsChange;
+
+  const onSelectWpRef = useRef(onSelectWp);
+  onSelectWpRef.current = onSelectWp;
+
   const isFlyViewRef = useRef(isFlyView);
   isFlyViewRef.current = isFlyView;
 
@@ -178,8 +184,8 @@ export const FlightMap: React.FC<MapProps> = ({
           } else {
             nextWps.push(newWp);
           }
-          onWaypointsChange(nextWps);
-          onSelectWp(nextWps.length - 1);
+          onWaypointsChangeRef.current?.(nextWps);
+          onSelectWpRef.current?.(nextWps.length - 1);
         } else if (editModeRef.current === "survey") {
           const updatedPts = [...surveyPointsRef.current, {
             latitude: parseFloat(lat.toFixed(6)),

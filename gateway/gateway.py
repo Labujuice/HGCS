@@ -817,13 +817,24 @@ class Gateway:
                 pct = int(20 + (seq / count) * 70)
                 self._update_mission_status(vehicle_id, mission_id, "UPLOADING", pct, f"Sending waypoint {seq} of {count-1}")
                 
-                master.mav.mission_item_int_send(
-                    target_sys, target_comp,
-                    item["seq"], item["frame"], item["command"],
-                    item["current"], item["autocontinue"],
-                    item["p1"], item["p2"], item["p3"], item["p4"],
-                    item["x"], item["y"], item["z"]
-                )
+                if msg.get_type() == 'MISSION_REQUEST':
+                    # Respond with legacy float MISSION_ITEM
+                    master.mav.mission_item_send(
+                        target_sys, target_comp,
+                        item["seq"], item["frame"], item["command"],
+                        item["current"], item["autocontinue"],
+                        item["p1"], item["p2"], item["p3"], item["p4"],
+                        float(item["x"]) / 1e7, float(item["y"]) / 1e7, item["z"]
+                    )
+                else:
+                    # Respond with MISSION_ITEM_INT
+                    master.mav.mission_item_int_send(
+                        target_sys, target_comp,
+                        item["seq"], item["frame"], item["command"],
+                        item["current"], item["autocontinue"],
+                        item["p1"], item["p2"], item["p3"], item["p4"],
+                        item["x"], item["y"], item["z"]
+                    )
                 
                 if seq == count - 1:
                     break
