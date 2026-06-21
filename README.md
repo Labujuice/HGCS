@@ -59,9 +59,9 @@ This project is an **AI-Native** development demonstration. We believe that with
 
 ## 📜 開源授權 (License)
 
-本專案採用 **GPLv3 (GNU General Public License v3)** 許可證。任何基於此專案的修改與衍生產品都必須保持開源並釋出原始碼，以維護開源社群的共享精神與開放性。
+本專案採用 **[GPLv3 (GNU General Public License v3)](LICENSE)** 許可證。任何基於此專案的修改與衍生產品都必須保持開源並釋出原始碼，以維護開源社群的共享精神與開放性。詳情請參閱專案根目錄下的 [LICENSE](LICENSE) 檔案。
 
-This project is licensed under the **GPLv3 (GNU General Public License v3)**. Any modifications or derivative works of this project must remain open-source and make their source code available under the same terms to protect the collaborative spirit of the open-source community.
+This project is licensed under the **[GPLv3 (GNU General Public License v3)](LICENSE)**. Any modifications or derivative works of this project must remain open-source and make their source code available under the same terms to protect the collaborative spirit of the open-source community. For details, please refer to the [LICENSE](LICENSE) file in the root directory.
 
 ---
 
