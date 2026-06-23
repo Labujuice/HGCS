@@ -392,6 +392,7 @@ class Gateway:
                 self._queue_telemetry_broadcast(vehicle_id)
 
     def _mock_log_outgoing_msg(self, vehicle_id: int, message: str):
+        print(f"[MockOUT] vid={vehicle_id} msg={message[:60]}")
         self.to_ws_queue.put(json.dumps({
             "type": "mavlink_log",
             "data": {

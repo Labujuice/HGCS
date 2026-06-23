@@ -2152,46 +2152,50 @@ function App() {
               </div>
             )}
 
-            {/* Tab 3: Sent — chronological list of all outgoing MAVLink commands */}
+            {/* Tab 3: Sent — chronological list of ALL outgoing MAVLink commands (no vehicle filter) */}
             {mavlinkActiveTab === "sent" && (
               <div className="dfo-body">
-                {(() => {
-                  const filtered = sentMavlinkLogs.filter(l =>
-                    activeVehicleId === null || l.vehicle_id === activeVehicleId
-                  );
-                  return filtered.length === 0 ? (
-                    <div className="dfo-empty">No GCS commands sent yet{activeVehicleId !== null ? ` to Vehicle #${activeVehicleId}` : ""}.</div>
-                  ) : (
-                    filtered.map((log, idx) => {
-                      const date = new Date(log.timestamp);
-                      const timeStr = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}.${String(date.getMilliseconds()).padStart(3, "0")}`;
-                      return (
-                        <div key={idx} className="mavlink-log-row">
-                          <span className="log-time">{timeStr}</span>
-                          <span className="log-dir out" style={{ color: "#38bdf8", background: "rgba(56,189,248,0.12)", minWidth: 36, textAlign: "center" }}>
-                            OUT
-                          </span>
-                          <span className="log-msg" style={{ color: "#e2e8f0" }}>{log.message}</span>
-                        </div>
-                      );
-                    })
-                  );
-                })()}
+                {sentMavlinkLogs.length === 0 ? (
+                  <div className="dfo-empty">No GCS commands sent yet.</div>
+                ) : (
+                  sentMavlinkLogs.map((log, idx) => {
+                    const date = new Date(log.timestamp);
+                    const timeStr = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}.${String(date.getMilliseconds()).padStart(3, "0")}`;
+                    return (
+                      <div key={idx} className="mavlink-log-row">
+                        <span className="log-time">{timeStr}</span>
+                        <span className="log-dir out" style={{ color: "#38bdf8", background: "rgba(56,189,248,0.12)", minWidth: 36, textAlign: "center" }}>
+                          OUT
+                        </span>
+                        <span style={{ color: "#64748b", fontSize: 10, padding: "0 4px", minWidth: 20 }}>#{log.vehicle_id}</span>
+                        <span className="log-msg" style={{ color: "#e2e8f0" }}>{log.message}</span>
+                      </div>
+                    );
+                  })
+                )}
               </div>
             )}
 
-            {/* Tab 4: Sent Stats — grouped/categorized sent commands (like Inspector but for OUT) */}
+            {/* Tab 4: Sent Stats — grouped/categorized (ALL vehicles, no vehicle filter) */}
             {mavlinkActiveTab === "sent_stats" && (
               <div className="dfo-body">
                 {(() => {
-                  const vehicleStats = activeVehicleId !== null
-                    ? (sentInspectorData[activeVehicleId] || {})
-                    : Object.values(sentInspectorData).reduce((acc, v) => ({ ...acc, ...v }), {} as Record<string, MsgStats>);
-                  return Object.keys(vehicleStats).length === 0 ? (
-                    <div className="dfo-empty">No sent command stats yet{activeVehicleId !== null ? ` for Vehicle #${activeVehicleId}` : ""}.</div>
+                  // Merge all vehicles' sent stats — OUT msgs are GCS-originated, no per-vehicle filter needed
+                  const allStats = Object.values(sentInspectorData).reduce(
+                    (acc, v) => {
+                      for (const [type, s] of Object.entries(v)) {
+                        if (!acc[type]) acc[type] = { ...s };
+                        else acc[type] = { ...acc[type], count: acc[type].count + s.count, fields: s.fields, lastTime: Math.max(acc[type].lastTime, s.lastTime) };
+                      }
+                      return acc;
+                    },
+                    {} as Record<string, MsgStats>
+                  );
+                  return Object.keys(allStats).length === 0 ? (
+                    <div className="dfo-empty">No sent command stats yet.</div>
                   ) : (
                     <div className="inspector-list">
-                      {Object.entries(vehicleStats).sort(([a], [b]) => a.localeCompare(b)).map(([msgType, stats]) => {
+                      {Object.entries(allStats).sort(([a], [b]) => a.localeCompare(b)).map(([msgType, stats]) => {
                         const isExpanded = !!expandedSentMsgs[msgType];
                         return (
                           <div key={msgType} className="inspector-item">
