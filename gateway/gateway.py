@@ -18,10 +18,11 @@ except ImportError:
     MAVLINK_AVAILABLE = False
 
 class Gateway:
-    def __init__(self, ws_host: str, ws_port: int, use_mock: bool):
+    def __init__(self, ws_host: str, ws_port: int, use_mock: bool, debug: bool = False):
         self.ws_host = ws_host
         self.ws_port = ws_port
         self.use_mock = use_mock or not MAVLINK_AVAILABLE
+        self.debug = debug
         
         # UI & Auto-shutdown settings
         self.serve_ui = False
@@ -54,6 +55,12 @@ class Gateway:
         # Mission status: vehicle_id -> mission status dict
         self.mission_statuses: Dict[int, Dict[str, Any]] = {}
         self.mission_lock = threading.Lock()
+        
+        # Autopilot types for connected vehicles: vehicle_id -> MAV_AUTOPILOT enum value (e.g. 12 is MAV_AUTOPILOT_PX4)
+        self.vehicle_autopilots: Dict[int, int] = {
+            1: 12, # Pre-fill mock vehicles with PX4
+            2: 12
+        }
         
         # Active threads list
         self.threads = []
@@ -148,6 +155,48 @@ class Gateway:
                 master = mavutil.mavlink_connection(connection_string)
                 self.active_links[connection_string] = master
                 print(f"✅ MAVLink Link established: {connection_string}")
+                
+                # Wrap recv_match to print incoming messages and queue to WS
+                if not hasattr(master, '_wrapped_recv_match'):
+                    orig_recv_match = master.recv_match
+                    def wrapped_recv_match(*args, **kwargs):
+                        m = orig_recv_match(*args, **kwargs)
+                        if m is not None:
+                            if self.debug:
+                                print(f"📥 [IN] Link {connection_string}: {m}")
+                            self.to_ws_queue.put(json.dumps({
+                                "type": "mavlink_log",
+                                "data": {
+                                    "direction": "IN",
+                                    "timestamp": time.time() * 1000,
+                                    "message": str(m),
+                                    "vehicle_id": m.get_srcSystem()
+                                }
+                            }))
+                        return m
+                    master.recv_match = wrapped_recv_match
+                    master._wrapped_recv_match = True
+                
+                # Wrap send to print outgoing messages and queue to WS
+                if not hasattr(master.mav, '_wrapped_send'):
+                    orig_send = master.mav.send
+                    def wrapped_send(msg, *args, **kwargs):
+                        if self.debug:
+                            print(f"📤 [OUT] Link {connection_string}: {msg}")
+                        target_sys = getattr(msg, 'target_system', 0)
+                        self.to_ws_queue.put(json.dumps({
+                            "type": "mavlink_log",
+                            "data": {
+                                "direction": "OUT",
+                                "timestamp": time.time() * 1000,
+                                "message": str(msg),
+                                "vehicle_id": target_sys
+                            }
+                        }))
+                        return orig_send(msg, *args, **kwargs)
+                    master.mav.send = wrapped_send
+                    master.mav._wrapped_send = True
+                        
                 break
             except Exception as e:
                 print(f"❌ Connection error on {connection_string}: {e}. Retrying in 4s...")
@@ -183,6 +232,10 @@ class Gateway:
                 msg_type = msg.get_type()
                 src_system = msg.get_srcSystem()
                 
+                # Ignore invalid system IDs (0 is broadcast/invalid, >=255 are GCS/controllers)
+                if src_system <= 0 or src_system >= 255:
+                    continue
+                    
                 if vehicle_id is None or vehicle_id != src_system:
                     vehicle_id = src_system
                     # Bind this vehicle ID to this master interface and connection string
@@ -192,45 +245,65 @@ class Gateway:
                 
                 # Check for heartbeat to get armed state and flight mode
                 if msg_type == 'HEARTBEAT':
+                    self.vehicle_autopilots[vehicle_id] = msg.autopilot
                     armed = (msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED) > 0
                     custom_mode = msg.custom_mode
                     type_drone = msg.type
                     
-                    # main_mode is byte 3 of custom_mode, sub_mode is byte 4
-                    main_mode = (custom_mode >> 8) & 0xFF
-                    sub_mode = (custom_mode >> 16) & 0xFF
-                    
-                    if type_drone in [mavutil.mavlink.MAV_TYPE_QUADROTOR, mavutil.mavlink.MAV_TYPE_HEXAROTOR, 
-                                      mavutil.mavlink.MAV_TYPE_FIXED_WING, mavutil.mavlink.MAV_TYPE_OCTOROTOR]:
-                        if main_mode == 1:
-                            mode_str = "MANUAL"
-                        elif main_mode == 2:
-                            mode_str = "ALTCTL"
-                        elif main_mode == 3:
-                            mode_str = "POSCTL"
-                        elif main_mode == 4: # Auto
-                            if sub_mode == 2:
-                                mode_str = "TAKEOFF"
-                            elif sub_mode == 3:
-                                mode_str = "HOLD"
-                            elif sub_mode == 4:
-                                mode_str = "MISSION"
-                            elif sub_mode == 5:
-                                mode_str = "RTL"
-                            elif sub_mode == 6:
-                                mode_str = "LAND"
+                    is_px4 = msg.autopilot == 12
+                    if is_px4:
+                        # main_mode is byte 3 of custom_mode, sub_mode is byte 4
+                        main_mode = (custom_mode >> 16) & 0xFF
+                        sub_mode = (custom_mode >> 24) & 0xFF
+                        
+                        if type_drone in [mavutil.mavlink.MAV_TYPE_QUADROTOR, mavutil.mavlink.MAV_TYPE_HEXAROTOR, 
+                                          mavutil.mavlink.MAV_TYPE_FIXED_WING, mavutil.mavlink.MAV_TYPE_OCTOROTOR]:
+                            if main_mode == 1:
+                                mode_str = "MANUAL"
+                            elif main_mode == 2:
+                                mode_str = "ALTCTL"
+                            elif main_mode == 3:
+                                mode_str = "POSCTL"
+                            elif main_mode == 4: # Auto
+                                if sub_mode == 2:
+                                    mode_str = "TAKEOFF"
+                                elif sub_mode == 3:
+                                    mode_str = "HOLD"
+                                elif sub_mode == 4:
+                                    mode_str = "MISSION"
+                                elif sub_mode == 5:
+                                    mode_str = "RTL"
+                                elif sub_mode == 6:
+                                    mode_str = "LAND"
+                                else:
+                                    mode_str = f"AUTO_{sub_mode}"
+                            elif main_mode == 5:
+                                mode_str = "ACRO"
+                            elif main_mode == 6:
+                                mode_str = "OFFBOARD"
+                            elif main_mode == 7:
+                                mode_str = "STABILIZED"
                             else:
-                                mode_str = f"AUTO_{sub_mode}"
-                        elif main_mode == 5:
-                            mode_str = "ACRO"
-                        elif main_mode == 6:
-                            mode_str = "OFFBOARD"
-                        elif main_mode == 7:
-                            mode_str = "STABILIZED"
+                                mode_str = f"PX4_MODE_{main_mode}_{sub_mode}"
                         else:
-                            mode_str = f"PX4_MODE_{main_mode}_{sub_mode}"
+                            mode_str = f"MODE_{custom_mode}"
                     else:
-                        mode_str = f"MODE_{custom_mode}"
+                        # ArduPilot Copter/Sub/etc.
+                        apm_modes = {
+                            0: "STABILIZE",
+                            1: "ACRO",
+                            2: "ALT_HOLD",
+                            3: "MISSION",  # Map AUTO to MISSION
+                            4: "GUIDED",
+                            5: "HOLD",     # Map LOITER to HOLD
+                            6: "RTL",
+                            7: "CIRCLE",
+                            9: "LAND",
+                            11: "DRIFT",
+                            16: "POSHOLD",
+                            17: "BRAKE"
+                        }
+                        mode_str = apm_modes.get(custom_mode, f"APM_MODE_{custom_mode}")
                         
                 elif msg_type == 'ATTITUDE':
                     roll = math.degrees(msg.roll)
@@ -259,6 +332,17 @@ class Gateway:
                     gps_satellites = msg.satellites_visible
                     gps_fix_type = msg.fix_type
                     
+                elif msg_type == 'SERIAL_CONTROL':
+                    count = msg.count
+                    data_bytes = bytes(msg.data[:count])
+                    text = data_bytes.decode('utf-8', errors='ignore')
+                    self.to_ws_queue.put(json.dumps({
+                        "type": "nsh_output",
+                        "data": {
+                            "text": text
+                        }
+                    }))
+                    
             except Exception as e:
                 print(f"⚠️ Error reading MAVLink packet on {connection_string}: {e}")
                 time.sleep(0.1)
@@ -277,7 +361,8 @@ class Gateway:
                             "battery_percent": battery_percent,
                             "battery_voltage": round(battery_voltage, 2),
                             "gps_satellites": gps_satellites,
-                            "gps_fix_type": gps_fix_type
+                            "gps_fix_type": gps_fix_type,
+                            "autopilot": "PX4" if self.vehicle_autopilots.get(vehicle_id, 12) == 12 else "ArduPilot"
                         },
                         "pose": {
                             "roll": round(roll, 2),
@@ -295,6 +380,17 @@ class Gateway:
                         }
                     }
                 self._queue_telemetry_broadcast(vehicle_id)
+
+    def _mock_log_outgoing_msg(self, vehicle_id: int, message: str):
+        self.to_ws_queue.put(json.dumps({
+            "type": "mavlink_log",
+            "data": {
+                "direction": "OUT",
+                "timestamp": time.time() * 1000,
+                "message": message,
+                "vehicle_id": vehicle_id
+            }
+        }))
 
     # --- MOCK SIMULATOR ---
     def _mock_telemetry_loop(self):
@@ -319,6 +415,9 @@ class Gateway:
                                 state["flying"] = False
                                 state["alt"] = 0.0
                             print(f"[Mock #{vehicle_id}] Vehicle armed state set to: {state['armed']}")
+                            # Mock outgoing MAVLink log
+                            arm_val = 1.0 if state["armed"] else 0.0
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : 400, confirmation : 0, param1 : {arm_val}, param2 : 0.0, param3 : 0.0, param4 : 0.0, param5 : 0.0, param6 : 0.0, param7 : 0.0}}")
                         elif cmd_type == "set_mode":
                             new_mode = cmd.get("mode", "HOLD")
                             state["mode"] = new_mode
@@ -326,6 +425,10 @@ class Gateway:
                                 state["flying"] = True
                                 state["target_wp_idx"] = 0
                             print(f"[Mock #{vehicle_id}] Flight mode set to: {state['mode']}")
+                            # Mock outgoing MAVLink log
+                            mode_map = {"MISSION": 67371008, "HOLD": 50593792}
+                            cust_mode = mode_map.get(new_mode, 0)
+                            self._mock_log_outgoing_msg(vehicle_id, f"SET_MODE {{target_system : {vehicle_id}, base_mode : 81, custom_mode : {cust_mode}}}")
                         elif cmd_type == "upload_mission":
                             state["waypoints"] = cmd.get("waypoints", [])
                             print(f"[Mock #{vehicle_id}] Received {len(state['waypoints'])} waypoints.")
@@ -335,20 +438,30 @@ class Gateway:
                             state["mode"] = "TAKEOFF"
                             state["target_alt"] = cmd.get("altitude", 10.0)
                             print(f"[Mock #{vehicle_id}] Guided Takeoff requested. Target alt: {state['target_alt']}m")
+                            # Mock outgoing MAVLink log
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : 22, confirmation : 0, param1 : 0.0, param2 : 0.0, param3 : 0.0, param4 : nan, param5 : nan, param6 : nan, param7 : {state['target_alt']}}}")
                         elif cmd_type == "change_speed":
                             state["target_speed"] = cmd.get("speed", 10.0)
                             print(f"[Mock #{vehicle_id}] Target speed set to: {state['target_speed']} m/s")
+                            # Mock outgoing MAVLink log
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : 178, confirmation : 0, param1 : 1.0, param2 : {state['target_speed']}, param3 : -1.0, param4 : 0.0, param5 : 0.0, param6 : 0.0, param7 : 0.0}}")
                         elif cmd_type == "land":
                             state["mode"] = "LAND"
                             print(f"[Mock #{vehicle_id}] Guided Land requested.")
+                            # Mock outgoing MAVLink log
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : 21, confirmation : 0, param1 : 0.0, param2 : 0.0, param3 : 0.0, param4 : nan, param5 : nan, param6 : nan, param7 : 0.0}}")
                         elif cmd_type == "rtl":
                             state["mode"] = "RTL"
                             state["flying"] = True
                             print(f"[Mock #{vehicle_id}] Guided RTL requested.")
+                            # Mock outgoing MAVLink log
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : 20, confirmation : 0, param1 : 0.0, param2 : 0.0, param3 : 0.0, param4 : nan, param5 : nan, param6 : nan, param7 : 0.0}}")
                         elif cmd_type == "pause":
                             state["mode"] = "HOLD"
                             state["flying"] = False
                             print(f"[Mock #{vehicle_id}] Guided Pause requested.")
+                            # Mock outgoing MAVLink log
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : 192, confirmation : 0, param1 : 0.0, param2 : 0.0, param3 : 0.0, param4 : nan, param5 : nan, param6 : nan, param7 : 0.0}}")
                         elif cmd_type == "go_to":
                             state["mode"] = "GO_TO"
                             state["flying"] = True
@@ -356,6 +469,8 @@ class Gateway:
                             state["target_lon"] = cmd.get("longitude")
                             state["target_alt"] = cmd.get("altitude", state["alt"])
                             print(f"[Mock #{vehicle_id}] Guided Go To requested. Lat/Lon: {state['target_lat']},{state['target_lon']}")
+                            # Mock outgoing MAVLink log
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_INT {{target_system : {vehicle_id}, target_component : 1, frame : 6, command : 192, current : 2, autocontinue : 0, x : {int(state['target_lat']*1e7)}, y : {int(state['target_lon']*1e7)}, z : {state['target_alt']}}}")
                         elif cmd_type == "orbit":
                             state["mode"] = "ORBIT"
                             state["flying"] = True
@@ -365,6 +480,8 @@ class Gateway:
                             state["orbit_radius"] = cmd.get("radius", 20.0)
                             state["orbit_angle"] = 0.0
                             print(f"[Mock #{vehicle_id}] Guided Orbit requested. Center Lat/Lon: {state['target_lat']},{state['target_lon']}, Radius: {state['orbit_radius']}m")
+                            # Mock outgoing MAVLink log
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_INT {{target_system : {vehicle_id}, target_component : 1, frame : 6, command : 34, current : 2, autocontinue : 0, param1 : {state['orbit_radius']}, param2 : nan, param3 : 0.0, param4 : nan, x : {int(state['target_lat']*1e7)}, y : {int(state['target_lon']*1e7)}, z : {state['target_alt']}}}")
             except queue.Empty:
                 pass
                 
@@ -624,7 +741,8 @@ class Gateway:
                             "battery_percent": battery_pct,
                             "battery_voltage": round(battery_volts, 1),
                             "gps_satellites": 16 if vid == 1 else 14,
-                            "gps_fix_type": 4
+                            "gps_fix_type": 4,
+                            "autopilot": "PX4"
                         },
                         "pose": {
                             "roll": round(roll, 1),
@@ -649,12 +767,46 @@ class Gateway:
 
     def _queue_telemetry_broadcast(self, vehicle_id: int):
         with self.telemetry_lock:
+            telem = self.telemetries[vehicle_id]
             telem_data = json.dumps({
                 "type": "telemetry",
                 "vehicle_id": vehicle_id,
-                "data": self.telemetries[vehicle_id]
+                "data": telem
             })
         self.to_ws_queue.put(telem_data)
+        
+        # In mock mode, we also generate mock MAVLink logs for telemetry to populate GCS debug panels
+        if self.use_mock:
+            hb_msg = f"HEARTBEAT {{type : 2, autopilot : 12, base_mode : 81, custom_mode : {67371008 if telem['status']['mode'] == 'MISSION' else 0}, system_status : 4, mavlink_version : 3}}"
+            self.to_ws_queue.put(json.dumps({
+                "type": "mavlink_log",
+                "data": {
+                    "direction": "IN",
+                    "timestamp": time.time() * 1000,
+                    "message": hb_msg,
+                    "vehicle_id": vehicle_id
+                }
+            }))
+            gp_msg = f"GLOBAL_POSITION_INT {{time_boot_ms : 12345, lat : {int(telem['navigation']['latitude'] * 1e7)}, lon : {int(telem['navigation']['longitude'] * 1e7)}, alt : {int(telem['navigation']['msl_altitude'] * 1000)}, relative_alt : {int(telem['navigation']['relative_altitude'] * 1000)}, vx : 0, vy : 0, vz : 0, hdg : {telem['pose']['heading']}}}"
+            self.to_ws_queue.put(json.dumps({
+                "type": "mavlink_log",
+                "data": {
+                    "direction": "IN",
+                    "timestamp": time.time() * 1000,
+                    "message": gp_msg,
+                    "vehicle_id": vehicle_id
+                }
+            }))
+            sys_msg = f"SYS_STATUS {{onboard_control_sensors_present : 1, onboard_control_sensors_enabled : 1, onboard_control_sensors_health : 1, load : 100, voltage_battery : {int(telem['status']['battery_voltage'] * 1000)}, current_battery : -1, battery_remaining : {telem['status']['battery_percent']}, drop_rate_comm : 0, errors_comm : 0, errors_count1 : 0, errors_count2 : 0, errors_count3 : 0, errors_count4 : 0}}"
+            self.to_ws_queue.put(json.dumps({
+                "type": "mavlink_log",
+                "data": {
+                    "direction": "IN",
+                    "timestamp": time.time() * 1000,
+                    "message": sys_msg,
+                    "vehicle_id": vehicle_id
+                }
+            }))
 
     # --- DYNAMIC COMMAND / MISSION ROUTER ---
     def _mission_worker_loop(self):
@@ -666,6 +818,8 @@ class Gateway:
                 
                 if task_type == "upload_mission":
                     self._handle_upload_mission(task)
+                elif task_type == "nsh_command":
+                    self._handle_nsh_command(vehicle_id, task.get("command", ""))
                 elif not self.use_mock:
                     if task_type == "arm":
                         self._handle_arm_disarm(vehicle_id, task.get("armed", False))
@@ -738,28 +892,30 @@ class Gateway:
             target_sys = vehicle_id
             target_comp = 1
             
-            self._update_mission_status(vehicle_id, mission_id, "UPLOADING", 15, "Clearing old mission...")
-            master.mav.mission_clear_all_send(target_sys, target_comp)
-            
-            # Allow some response time
-            time.sleep(0.1)
+            self._update_mission_status(vehicle_id, mission_id, "UPLOADING", 15, "Preparing waypoints...")
             
             # Map waypoints
             mav_items = []
-            home_lat = waypoints[0].get("latitude", 0.0)
-            home_lon = waypoints[0].get("longitude", 0.0)
-            home_alt = 0.0
             
-            # Add home pos at seq 0
-            mav_items.append({
-                "seq": 0,
-                "command": mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
-                "frame": 0,
-                "current": 0,
-                "autocontinue": 1,
-                "p1": 0, "p2": 0, "p3": 0, "p4": 0,
-                "x": int(home_lat * 1e7), "y": int(home_lon * 1e7), "z": float(home_alt)
-            })
+            # Determine if we should prepend home point at seq 0.
+            # PX4 does not use seq 0 as Home; it treats seq 0 as the first mission item.
+            # ArduPilot uses seq 0 as Home.
+            is_px4 = self.vehicle_autopilots.get(vehicle_id, 12) == 12 # 12 is MAV_AUTOPILOT_PX4
+            
+            if not is_px4:
+                home_lat = waypoints[0].get("latitude", 0.0)
+                home_lon = waypoints[0].get("longitude", 0.0)
+                home_alt = 0.0
+                # Add home pos at seq 0 for non-PX4 autopilots
+                mav_items.append({
+                    "seq": 0,
+                    "command": mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
+                    "frame": 0,
+                    "current": 0,
+                    "autocontinue": 1,
+                    "p1": 0, "p2": 0, "p3": 0, "p4": 0,
+                    "x": int(home_lat * 1e7), "y": int(home_lon * 1e7), "z": float(home_alt)
+                })
             
             for wp in waypoints:
                 cmd_str = wp.get("command", "WAYPOINT")
@@ -772,7 +928,26 @@ class Gateway:
                 if cmd_str == "TAKEOFF":
                     cmd = mavutil.mavlink.MAV_CMD_NAV_TAKEOFF
                 elif cmd_str == "RTL":
-                    cmd = mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH
+                    if is_px4:
+                        # PX4 internal mission navigator does not support RTL inside mission sequence.
+                        # Map RTL to LAND (21) at home/takeoff coordinates.
+                        cmd = mavutil.mavlink.MAV_CMD_NAV_LAND
+                        home_lat = 0.0
+                        home_lon = 0.0
+                        if vehicle_id in self.telemetries:
+                            nav = self.telemetries[vehicle_id].get("navigation", {})
+                            home_lat = nav.get("latitude", 0.0)
+                            home_lon = nav.get("longitude", 0.0)
+                        
+                        if home_lat == 0.0 or home_lon == 0.0:
+                            home_lat = waypoints[0].get("latitude", 0.0)
+                            home_lon = waypoints[0].get("longitude", 0.0)
+                        
+                        lat = home_lat
+                        lon = home_lon
+                        alt = 0.0
+                    else:
+                        cmd = mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH
                 elif cmd_str == "LAND":
                     cmd = mavutil.mavlink.MAV_CMD_NAV_LAND
                 elif cmd_str == "LOITER":
@@ -793,57 +968,75 @@ class Gateway:
                     "x": int(lat * 1e7), "y": int(lon * 1e7), "z": float(alt)
                 })
                 
+            print(f"📋 Compiled MAVLink mission items to send to Vehicle #{vehicle_id}:")
+            for item in mav_items:
+                print(f"  Seq: {item['seq']}, Cmd: {item['command']}, Frame: {item['frame']}, x: {item['x']}, y: {item['y']}, z: {item['z']}, p1: {item['p1']}, p2: {item['p2']}, p3: {item['p3']}, p4: {item['p4']}")
+                
             count = len(mav_items)
             master.mav.mission_count_send(target_sys, target_comp, count)
             
-            retries = 3
+            retries = 5
             last_request_time = time.time()
+            ack_msg = None
             
             while True:
-                msg = master.recv_match(type=['MISSION_REQUEST', 'MISSION_REQUEST_INT'], blocking=True, timeout=1.0)
+                msg = master.recv_match(type=['MISSION_REQUEST', 'MISSION_REQUEST_INT', 'MISSION_ACK'], blocking=True, timeout=1.0)
                 if not msg:
                     if time.time() - last_request_time > 2.0:
                         retries -= 1
                         if retries <= 0:
-                            raise TimeoutError("Timeout waiting for MISSION_REQUEST")
+                            raise TimeoutError("Timeout waiting for MISSION_REQUEST or MISSION_ACK")
                         print(f"⚠️ Resending mission count to #{vehicle_id} (Retries left: {retries})")
                         master.mav.mission_count_send(target_sys, target_comp, count)
                         last_request_time = time.time()
                     continue
                     
-                retries = 3
+                retries = 5
                 last_request_time = time.time()
+                
+                if msg.get_type() == 'MISSION_ACK':
+                    ack_msg = msg
+                    break
+                    
                 seq = msg.seq
                 if seq >= count:
-                    break
+                    print(f"⚠️ Received request for seq {seq} >= count {count}, ignoring")
+                    continue
                     
                 item = mav_items[seq]
                 pct = int(20 + (seq / count) * 70)
                 self._update_mission_status(vehicle_id, mission_id, "UPLOADING", pct, f"Sending waypoint {seq} of {count-1}")
                 
                 if msg.get_type() == 'MISSION_REQUEST':
-                    # Respond with legacy float MISSION_ITEM
+                    # Legacy float MISSION_ITEM: Map INT frames to FLOAT frames
+                    frame = item["frame"]
+                    if frame == 11:
+                        frame = 3
+                    elif frame == 5:
+                        frame = 0
+                    
                     master.mav.mission_item_send(
                         target_sys, target_comp,
-                        item["seq"], item["frame"], item["command"],
+                        item["seq"], frame, item["command"],
                         item["current"], item["autocontinue"],
                         item["p1"], item["p2"], item["p3"], item["p4"],
                         float(item["x"]) / 1e7, float(item["y"]) / 1e7, item["z"]
                     )
                 else:
-                    # Respond with MISSION_ITEM_INT
+                    # MISSION_ITEM_INT: Map FLOAT frames to INT frames
+                    frame = item["frame"]
+                    if frame == 3:
+                        frame = 11
+                    elif frame == 0:
+                        frame = 5
+                        
                     master.mav.mission_item_int_send(
                         target_sys, target_comp,
-                        item["seq"], item["frame"], item["command"],
+                        item["seq"], frame, item["command"],
                         item["current"], item["autocontinue"],
                         item["p1"], item["p2"], item["p3"], item["p4"],
                         item["x"], item["y"], item["z"]
                     )
-                
-                if seq == count - 1:
-                    break
-                    
-            ack_msg = master.recv_match(type='MISSION_ACK', blocking=True, timeout=2.0)
             if ack_msg:
                 if ack_msg.type == mavutil.mavlink.MAV_MISSION_ACCEPTED:
                     self._update_mission_status(vehicle_id, mission_id, "SUCCESS", 100, "Mission uploaded successfully")
@@ -874,22 +1067,60 @@ class Gateway:
         if not master:
             return
             
-        PX4_CUSTOM_MAIN_MODE_AUTO = 4
-        mode_mapping = {
-            "HOLD": (PX4_CUSTOM_MAIN_MODE_AUTO, 3),
-            "MISSION": (PX4_CUSTOM_MAIN_MODE_AUTO, 4),
-            "RTL": (PX4_CUSTOM_MAIN_MODE_AUTO, 5),
-        }
+        is_px4 = self.vehicle_autopilots.get(vehicle_id, 12) == 12 # 12 is MAV_AUTOPILOT_PX4
         
-        if mode in mode_mapping:
-            main_mode, sub_mode = mode_mapping[mode]
-            custom_mode = (sub_mode << 16) | (main_mode << 8)
-            master.mav.set_mode_send(
-                vehicle_id,
-                mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-                custom_mode
-            )
-            print(f"⚙️ MAVLink mode set for Vehicle #{vehicle_id}: PX4 {mode} (main {main_mode}, sub {sub_mode})")
+        if is_px4:
+            PX4_CUSTOM_MAIN_MODE_MANUAL = 1
+            PX4_CUSTOM_MAIN_MODE_ALTCTL = 2
+            PX4_CUSTOM_MAIN_MODE_POSCTL = 3
+            PX4_CUSTOM_MAIN_MODE_AUTO = 4
+            PX4_CUSTOM_MAIN_MODE_OFFBOARD = 6
+            PX4_CUSTOM_MAIN_MODE_STABILIZED = 7
+            
+            mode_mapping = {
+                "MANUAL": (PX4_CUSTOM_MAIN_MODE_MANUAL, 0),
+                "STABILIZED": (PX4_CUSTOM_MAIN_MODE_STABILIZED, 0),
+                "ALTCTL": (PX4_CUSTOM_MAIN_MODE_ALTCTL, 0),
+                "POSCTL": (PX4_CUSTOM_MAIN_MODE_POSCTL, 0),
+                "HOLD": (PX4_CUSTOM_MAIN_MODE_AUTO, 3),        # Loiter
+                "MISSION": (PX4_CUSTOM_MAIN_MODE_AUTO, 4),     # Mission
+                "RTL": (PX4_CUSTOM_MAIN_MODE_AUTO, 5),         # RTL
+                "LAND": (PX4_CUSTOM_MAIN_MODE_AUTO, 6),        # Land
+                "TAKEOFF": (PX4_CUSTOM_MAIN_MODE_AUTO, 2),     # Takeoff
+                "OFFBOARD": (PX4_CUSTOM_MAIN_MODE_OFFBOARD, 0),
+            }
+            if mode in mode_mapping:
+                main_mode, sub_mode = mode_mapping[mode]
+                custom_mode = (sub_mode << 24) | (main_mode << 16)
+                master.mav.set_mode_send(
+                    vehicle_id,
+                    mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                    custom_mode
+                )
+                print(f"⚙️ MAVLink mode set for Vehicle #{vehicle_id}: PX4 {mode} (main {main_mode}, sub {sub_mode})")
+        else:
+            # ArduPilot Copter custom modes
+            # STABILIZE = 0, ALT_HOLD = 2, AUTO = 3, GUIDED = 4, LOITER = 5, RTL = 6, LAND = 9, POSHOLD = 16
+            mode_mapping = {
+                "MANUAL": 0,       # STABILIZE
+                "STABILIZED": 0,   # STABILIZE
+                "ALTCTL": 2,       # ALT_HOLD
+                "POSCTL": 16,      # POSHOLD
+                "HOLD": 5,         # LOITER
+                "MISSION": 3,      # AUTO / MISSION
+                "RTL": 6,          # RTL
+                "LAND": 9,         # LAND
+                "TAKEOFF": 3,      # AUTO
+                "OFFBOARD": 4,     # GUIDED
+            }
+            if mode in mode_mapping:
+                custom_mode = mode_mapping[mode]
+                master.mav.set_mode_send(
+                    vehicle_id,
+                    mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                    custom_mode
+                )
+                print(f"⚙️ MAVLink mode set for Vehicle #{vehicle_id}: ArduPilot {mode} ({custom_mode})")
 
     def _handle_takeoff(self, vehicle_id: int, altitude: float):
         master = self.vehicle_masters.get(vehicle_id)
@@ -1043,6 +1274,57 @@ class Gateway:
         )
         print(f"⚙️ MAVLink DO_CHANGE_SPEED command sent to Vehicle #{vehicle_id}: speed={speed} m/s")
 
+    def _handle_nsh_command(self, vehicle_id: int, cmd: str):
+        if self.use_mock:
+            # Simulate mock NSH shell responses
+            output = ""
+            if not cmd.strip():
+                output = "\nnsh> "
+            elif cmd.strip() == "help":
+                output = (
+                    "\nCommands:\n"
+                    "  help     - Show available commands\n"
+                    "  ver      - Show system version\n"
+                    "  status   - Show mock drone status\n"
+                    "  free     - Show free RAM\n"
+                    "\nnsh> "
+                )
+            elif cmd.strip() == "ver":
+                output = "\nPX4 Auto-Pilot Version: 1.14.0 (Mock SITL)\nBuild: v1.14.0-0-gabcdef\n\nnsh> "
+            elif cmd.strip() == "status":
+                output = f"\nSystem ID: {vehicle_id}\nArmed: True\nMode: MISSION\nBattery: 98%\nGPS Satellites: 18\n\nnsh> "
+            elif cmd.strip() == "free":
+                output = "\n             total       used       free    largest\nMem:       1048576     262144     786432     524288\n\nnsh> "
+            else:
+                output = f"\nnsh: {cmd.strip()}: command not found\n\nnsh> "
+            
+            self.to_ws_queue.put(json.dumps({
+                "type": "nsh_output",
+                "data": {
+                    "text": output
+                }
+            }))
+            return
+            
+        master = self.vehicle_masters.get(vehicle_id)
+        if not master:
+            return
+            
+        payload = (cmd + '\n').encode('utf-8')
+        for i in range(0, len(payload), 70):
+            chunk = payload[i:i+70]
+            data = bytearray(70)
+            data[:len(chunk)] = chunk
+            # flags = 3: EXCLUSIVE (1) | RESPOND (2)
+            master.mav.serial_control_send(
+                10, # device (10 = MAVLink shell)
+                3, # flags
+                0, # timeout
+                0, # baudrate
+                len(chunk), # count
+                data
+            )
+
     # --- STATIC HTTP SERVER & AUTO-SHUTDOWN UTILITIES ---
     def _run_http_server(self, directory: str, port: int):
         import http.server
@@ -1050,9 +1332,17 @@ class Gateway:
         
         class Handler(http.server.SimpleHTTPRequestHandler):
             def __init__(self, *args, **kwargs):
-                super().__init__(*args, directory=directory, **kwargs)
+                try:
+                    super().__init__(*args, directory=directory, **kwargs)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                    pass
             def log_message(self, format, *args):
                 pass # Suppress standard HTTP logs to keep stdout clean
+            def handle(self):
+                try:
+                    super().handle()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                    pass
                 
         socketserver.TCPServer.allow_reuse_address = True
         try:
@@ -1228,6 +1518,13 @@ class Gateway:
                             "vehicle_id": vehicle_id,
                             "speed": speed
                         })
+                    elif action == "nsh_command":
+                        cmd = data.get("command", "")
+                        self.to_drone_queue.put({
+                            "type": "nsh_command",
+                            "vehicle_id": vehicle_id,
+                            "command": cmd
+                        })
                     else:
                         print(f"❓ Unknown action: {action}")
                 except Exception as e:
@@ -1256,6 +1553,7 @@ if __name__ == "__main__":
     parser.add_argument("--host", type=str, default="127.0.0.1", help="WebSocket host")
     parser.add_argument("--port", type=int, default=8080, help="WebSocket port")
     parser.add_argument("--mock", action="store_true", help="Force multi-drone mock telemetry")
+    parser.add_argument("--debug", action="store_true", help="Print all input/output MAVLink messages in a human-readable format")
     
     # Static serving arguments
     parser.add_argument("--no-serve", dest="serve", action="store_false", help="Do not serve web UI static files")
@@ -1276,7 +1574,8 @@ if __name__ == "__main__":
     gateway = Gateway(
         ws_host=args.host,
         ws_port=args.port,
-        use_mock=args.mock
+        use_mock=args.mock,
+        debug=args.debug
     )
     
     gateway.serve_ui = args.serve

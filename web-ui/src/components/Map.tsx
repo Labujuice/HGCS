@@ -30,6 +30,7 @@ export interface MapVehicle {
   armed: boolean;
   mode: string;
   altitude?: number;
+  autopilot?: string;
 }
 
 interface MapProps {
@@ -102,6 +103,11 @@ export const FlightMap: React.FC<MapProps> = ({
 
   const [isFollowing, setIsFollowing] = useState(true);
   const lastCenterTimeRef = useRef<number>(0);
+
+  // ─── Flight Trajectory Refs ─────────────────────────────────
+  const trajectoriesRef = useRef<Record<number, L.LatLngLiteral[]>>({});
+  const prevArmedRef = useRef<Record<number, boolean>>({});
+  const trajectoryPolylinesRef = useRef<Record<number, L.Polyline>>({});
 
   // ─── 1. Map initialization ─────────────────────────────────
   useEffect(() => {
@@ -275,6 +281,8 @@ export const FlightMap: React.FC<MapProps> = ({
             <span style="font-size:9px;background:rgba(14,165,233,0.15);padding:1px 5px;border-radius:3px;color:#38bdf8;border:1px solid rgba(14,165,233,0.3);">${vehicle.mode}</span>
           </div>
           <div style="display:grid;grid-template-columns:auto auto;gap:2px 10px;">
+            <span style="color:#6b7280;font-size:9px;">Autopilot</span>
+            <span style="font-weight:700;color:#a78bfa;">${vehicle.autopilot || "PX4"}</span>
             <span style="color:#6b7280;font-size:9px;">Altitude</span>
             <span style="font-weight:700;color:#38bdf8;">${(vehicle.altitude ?? 0).toFixed(1)} m</span>
             <span style="color:#6b7280;font-size:9px;">Heading</span>
@@ -508,6 +516,75 @@ export const FlightMap: React.FC<MapProps> = ({
     }
   }, [vehicles, activeVehicleId, isFollowing]);
 
+  // ─── 6. Flight Trajectory Drawing ──────────────────────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    Object.values(vehicles).forEach((v) => {
+      const vId = v.id;
+      const latLng = { lat: v.latitude, lng: v.longitude };
+
+      if (!v.latitude || !v.longitude || (v.latitude === 0 && v.longitude === 0)) {
+        return;
+      }
+
+      const wasArmed = prevArmedRef.current[vId] || false;
+      const isArmed = v.armed;
+
+      // Detect rising edge of arm: when vehicle transitions from disarmed -> armed
+      if (isArmed && !wasArmed) {
+        // Clear existing trajectory coordinates for this vehicle
+        trajectoriesRef.current[vId] = [];
+
+        // Remove existing polyline from map
+        if (trajectoryPolylinesRef.current[vId]) {
+          trajectoryPolylinesRef.current[vId].remove();
+          delete trajectoryPolylinesRef.current[vId];
+        }
+
+        console.log(`🛸 Vehicle #${vId} Armed. Trajectory cleared.`);
+      }
+
+      // If currently armed, append position to trajectory
+      if (isArmed) {
+        if (!trajectoriesRef.current[vId]) {
+          trajectoriesRef.current[vId] = [];
+        }
+
+        const path = trajectoriesRef.current[vId];
+        const last = path[path.length - 1];
+        if (!last || last.lat !== latLng.lat || last.lng !== latLng.lng) {
+          path.push(latLng);
+
+          // Update or create the polyline on the map
+          if (trajectoryPolylinesRef.current[vId]) {
+            trajectoryPolylinesRef.current[vId].setLatLngs(path);
+          } else {
+            trajectoryPolylinesRef.current[vId] = L.polyline(path, {
+              color: "#38bdf8", // Sky blue/cyan
+              weight: 3,
+              opacity: 0.85,
+              dashArray: "5, 5",
+            }).addTo(map);
+          }
+        }
+      }
+
+      prevArmedRef.current[vId] = isArmed;
+    });
+  }, [vehicles]);
+
+  // Clean up all trajectory polylines on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(trajectoryPolylinesRef.current).forEach((polyline) => {
+        polyline.remove();
+      });
+      trajectoryPolylinesRef.current = {};
+    };
+  }, []);
+
   // ─── Handlers ─────────────────────────────────────────────
   const locateActiveDrone = () => {
     const map = mapRef.current;
@@ -539,16 +616,16 @@ export const FlightMap: React.FC<MapProps> = ({
       {/* Leaflet target div */}
       <div ref={mapContainerRef} className="w-full h-full z-0" />
 
-      {/* Map floating controls (left, below fly-tools panel) */}
+      {/* Map floating controls (left column 2, side-by-side with fly-tools panel) */}
       <div
         style={{
           position: "absolute",
-          top: "calc(var(--topbar-h, 40px) + 12px + 56px * 5 + 6px * 4 + 20px)",
-          left: 12,
+          top: "calc(var(--topbar-h, 40px) + 12px)",
+          left: 80,
           zIndex: 400,
           display: "flex",
           flexDirection: "column",
-          gap: 5,
+          gap: 6,
           width: 56,
         }}
       >

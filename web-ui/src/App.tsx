@@ -23,6 +23,8 @@ import {
   ChevronUp,
   ChevronDown,
   Target,
+  MessageSquare,
+  Terminal,
 } from "lucide-react";
 import "./App.css";
 
@@ -39,6 +41,7 @@ interface VehicleTelemetry {
     battery_voltage: number;
     gps_satellites: number;
     gps_fix_type: number;
+    autopilot?: string;
   };
   pose: {
     roll: number;
@@ -102,6 +105,142 @@ function App() {
   const [tcpPort, setTcpPort] = useState(5760);
   const [serialPort, setSerialPort] = useState("/dev/ttyUSB0");
   const [serialBaud, setSerialBaud] = useState(57600);
+
+  // ── Mission 4 Debug Overlays ─────────────────────────────────
+  const [showMavlinkLog, setShowMavlinkLog] = useState(false);
+  const [mavlinkLogs, setMavlinkLogs] = useState<Array<{ direction: "IN" | "OUT"; timestamp: number; message: string }>>([]);
+  const [showNshTerminal, setShowNshTerminal] = useState(false);
+  const [nshLogs, setNshLogs] = useState("nsh> ");
+  const [nshInput, setNshInput] = useState("");
+
+  // ── Mission 5: Tabbed MAVLink Logs, Dragging, Resizing ───────
+  const [mavlinkActiveTab, setMavlinkActiveTab] = useState<"raw" | "inspector" | "sent">("raw");
+  const [sentMavlinkLogs, setSentMavlinkLogs] = useState<Array<{ direction: "OUT"; timestamp: number; message: string }>>([]);
+  
+  interface MsgStats {
+    count: number;
+    lastTime: number;
+    rate: number;
+    timestamps: number[];
+    fields: Record<string, string>;
+  }
+  const [inspectorData, setInspectorData] = useState<Record<string, MsgStats>>({});
+  const [expandedMsgs, setExpandedMsgs] = useState<Record<string, boolean>>({});
+
+  const parseMavlinkMessage = (msgStr: string) => {
+    const match = msgStr.match(/^([A-Z0-9_]+)\s*\{(.*)\}$/);
+    if (!match) return { type: msgStr.split(" ")[0] || "UNKNOWN", fields: {} as Record<string, string> };
+    const type = match[1];
+    const fieldsStr = match[2];
+    const fields: Record<string, string> = {};
+    const parts = fieldsStr.split(/,\s*/);
+    parts.forEach(part => {
+      const kv = part.split(/\s*:\s*/);
+      if (kv.length === 2) {
+        fields[kv[0].trim()] = kv[1].trim();
+      }
+    });
+    return { type, fields };
+  };
+
+  const [mavlinkPos, setMavlinkPos] = useState({ x: window.innerWidth - 500, y: 80 });
+  const [isDraggingMavlink, setIsDraggingMavlink] = useState(false);
+  const mavlinkDragStart = useRef({ x: 0, y: 0 });
+  const mavlinkPosStart = useRef({ x: 0, y: 0 });
+
+  const [nshPos, setNshPos] = useState({ x: window.innerWidth - 1000, y: 80 });
+  const [isDraggingNsh, setIsDraggingNsh] = useState(false);
+  const nshDragStart = useRef({ x: 0, y: 0 });
+  const nshPosStart = useRef({ x: 0, y: 0 });
+
+  const handleMavlinkMouseDown = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest(".dfo-header")) {
+      setIsDraggingMavlink(true);
+      mavlinkDragStart.current = { x: e.clientX, y: e.clientY };
+      mavlinkPosStart.current = { ...mavlinkPos };
+      e.preventDefault();
+    }
+  };
+
+  const handleNshMouseDown = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).closest(".dfo-header")) {
+      setIsDraggingNsh(true);
+      nshDragStart.current = { x: e.clientX, y: e.clientY };
+      nshPosStart.current = { ...nshPos };
+      e.preventDefault();
+    }
+  };
+
+  useEffect(() => {
+    if (!isDraggingMavlink) return;
+    const handleMouseMove = (e: MouseEvent) => {
+      const dx = e.clientX - mavlinkDragStart.current.x;
+      const dy = e.clientY - mavlinkDragStart.current.y;
+      setMavlinkPos({
+        x: Math.max(10, Math.min(window.innerWidth - 150, mavlinkPosStart.current.x + dx)),
+        y: Math.max(10, Math.min(window.innerHeight - 100, mavlinkPosStart.current.y + dy)),
+      });
+    };
+    const handleMouseUp = () => setIsDraggingMavlink(false);
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDraggingMavlink]);
+
+  useEffect(() => {
+    if (!isDraggingNsh) return;
+    const handleMouseMove = (e: MouseEvent) => {
+      const dx = e.clientX - nshDragStart.current.x;
+      const dy = e.clientY - nshDragStart.current.y;
+      setNshPos({
+        x: Math.max(10, Math.min(window.innerWidth - 150, nshPosStart.current.x + dx)),
+        y: Math.max(10, Math.min(window.innerHeight - 100, nshPosStart.current.y + dy)),
+      });
+    };
+    const handleMouseUp = () => setIsDraggingNsh(false);
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDraggingNsh]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setMavlinkPos((prev) => ({
+        x: Math.max(10, Math.min(prev.x, window.innerWidth - 300)),
+        y: Math.max(10, Math.min(prev.y, window.innerHeight - 150)),
+      }));
+      setNshPos((prev) => ({
+        x: Math.max(10, Math.min(prev.x, window.innerWidth - 300)),
+        y: Math.max(10, Math.min(prev.y, window.innerHeight - 150)),
+      }));
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  // Auto-scroll refs
+  const mavlinkLogsEndRef = useRef<HTMLDivElement | null>(null);
+  const nshLogsEndRef = useRef<HTMLPreElement | null>(null);
+
+  // Auto-scroll MAVLink logs to bottom
+  useEffect(() => {
+    if (mavlinkLogsEndRef.current && mavlinkActiveTab === "raw") {
+      mavlinkLogsEndRef.current.scrollTop = mavlinkLogsEndRef.current.scrollHeight;
+    }
+  }, [mavlinkLogs, showMavlinkLog, mavlinkActiveTab]);
+
+  // Auto-scroll NSH logs to bottom
+  useEffect(() => {
+    if (nshLogsEndRef.current) {
+      nshLogsEndRef.current.scrollTop = nshLogsEndRef.current.scrollHeight;
+    }
+  }, [nshLogs, showNshTerminal]);
 
   // ── Telemetry derived states ─────────────────────────────────
   const [climbRate, setClimbRate] = useState(0);
@@ -335,6 +474,7 @@ function App() {
       battery_voltage: 25.2,
       gps_satellites: 12,
       gps_fix_type: 4,
+      autopilot: "PX4",
     },
     pose: { roll: 0.0, pitch: 0.0, yaw: 0.0, heading: 0 },
     navigation: {
@@ -362,6 +502,7 @@ function App() {
         armed: false,
         mode: "HOLD",
         altitude: 0.0,
+        autopilot: "PX4",
         fullData: createEmptyTelemetry(1, 24.7746, 121.0446),
       },
       2: {
@@ -372,6 +513,7 @@ function App() {
         armed: false,
         mode: "HOLD",
         altitude: 0.0,
+        autopilot: "PX4",
         fullData: createEmptyTelemetry(2, 24.776, 121.0465),
       },
     };
@@ -566,6 +708,7 @@ function App() {
           armed: state.armed,
           mode: state.mode,
           altitude: parseFloat(state.alt.toFixed(1)),
+          autopilot: "PX4",
           fullData: {
             timestamp: Date.now(),
             vehicle_id: vid,
@@ -576,6 +719,7 @@ function App() {
               battery_voltage: parseFloat(state.batteryVolts.toFixed(1)),
               gps_satellites: state.armed ? 18 : 12,
               gps_fix_type: 4,
+              autopilot: "PX4",
             },
             pose: { roll, pitch, yaw: state.yaw, heading: Math.round(state.yaw) },
             navigation: {
@@ -632,6 +776,7 @@ function App() {
                 armed: payload.data.status.armed,
                 mode: payload.data.status.mode,
                 altitude: payload.data.navigation.relative_altitude,
+                autopilot: payload.data.status.autopilot,
                 fullData: payload.data,
               },
             }));
@@ -649,6 +794,48 @@ function App() {
             setGatewayLinks(payload.data || []);
           } else if (payload.type === "system_info") {
             setUseMock(payload.data.use_mock || false);
+          } else if (payload.type === "mavlink_log") {
+            const logData = payload.data;
+            setMavlinkLogs((prev) => {
+              const next = [...prev, logData];
+              if (next.length > 200) return next.slice(next.length - 200);
+              return next;
+            });
+            
+            if (logData.direction === "OUT") {
+              setSentMavlinkLogs((prev) => {
+                const next = [...prev, logData];
+                if (next.length > 100) return next.slice(next.length - 100);
+                return next;
+              });
+            } else if (logData.direction === "IN") {
+              const now = logData.timestamp;
+              const parsed = parseMavlinkMessage(logData.message);
+              const type = parsed.type;
+              setInspectorData((prev) => {
+                const existing = prev[type] || { count: 0, lastTime: 0, rate: 0, timestamps: [], fields: {} };
+                const nextTimestamps = [...existing.timestamps, now].slice(-5);
+                let rate = 0;
+                if (nextTimestamps.length > 1) {
+                  const elapsed = (nextTimestamps[nextTimestamps.length - 1] - nextTimestamps[0]) / 1000;
+                  if (elapsed > 0) {
+                    rate = (nextTimestamps.length - 1) / elapsed;
+                  }
+                }
+                return {
+                  ...prev,
+                  [type]: {
+                    count: existing.count + 1,
+                    lastTime: now,
+                    rate: parseFloat(rate.toFixed(1)),
+                    timestamps: nextTimestamps,
+                    fields: parsed.fields
+                  }
+                };
+              });
+            }
+          } else if (payload.type === "nsh_output") {
+            setNshLogs((prev) => prev + payload.data.text);
           }
         } catch (err) {
           console.warn("[WS] Error decoding message:", err);
@@ -749,6 +936,7 @@ function App() {
       orbit: { action: "orbit", data: { vehicle_id: vId, latitude: data.latitude, longitude: data.longitude, altitude: data.altitude || 10.0, radius: data.radius || 20.0 } },
       change_speed: { action: "change_speed", data: { vehicle_id: vId, speed: data.speed } },
       set_mode: { action: "set_mode", data: { vehicle_id: vId, mode: data.mode } },
+      nsh_command: { action: "nsh_command", data: { vehicle_id: vId, command: data.command } },
     };
     if (actionMap[type]) wsRef.current.send(JSON.stringify(actionMap[type]));
   };
@@ -967,7 +1155,41 @@ function App() {
               }`}
             >
               {telemetry.status.armed ? "▶ ARMED" : "■ DISARMED"}{" "}
-              — {telemetry.status.mode}
+              —{" "}
+              <select
+                value={telemetry.status.mode}
+                onChange={(e) =>
+                  executeSliderAction({
+                    type: "set_mode",
+                    label: "Change Mode",
+                    data: { mode: e.target.value },
+                  })
+                }
+                className="mode-select"
+              >
+                {Array.from(
+                  new Set([
+                    "MANUAL",
+                    "STABILIZED",
+                    "ALTCTL",
+                    "POSCTL",
+                    "HOLD",
+                    "MISSION",
+                    "RTL",
+                    "LAND",
+                    "TAKEOFF",
+                    "OFFBOARD",
+                    telemetry.status.mode
+                  ].filter(Boolean))
+                ).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+              {telemetry.status.autopilot && (
+                <span className="autopilot-badge">{telemetry.status.autopilot}</span>
+              )}
             </div>
           ) : (
             <div className="qgc-readiness disconnected">Not Connected</div>
@@ -1024,9 +1246,15 @@ function App() {
                     setSelectedWpIndex(null);
                   }}
                 >
-                  {vehicleList.map((id) => (
-                    <option key={id} value={id}>#{id}</option>
-                  ))}
+                  {vehicleList.map((id) => {
+                    const vTelem = vehicles[id];
+                    const ap = vTelem?.autopilot || vTelem?.fullData?.status?.autopilot;
+                    return (
+                      <option key={id} value={id}>
+                        #{id} {ap ? `(${ap})` : ""}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
             )}
@@ -1039,6 +1267,26 @@ function App() {
             >
               {isConnected ? "● LINK" : isSimulating ? "◎ SIM" : "○ OFFLINE"}
             </div>
+
+            {/* MAVLink Log viewer button */}
+            <button
+              className={`topbar-icon-btn ${showMavlinkLog ? "active" : ""}`}
+              onClick={() => setShowMavlinkLog((p) => !p)}
+              title="MAVLink Raw Messages Debug"
+            >
+              <MessageSquare style={{ width: 12, height: 12 }} />
+              MAVLink Logs
+            </button>
+
+            {/* NSH Terminal button */}
+            <button
+              className={`topbar-icon-btn ${showNshTerminal ? "active" : ""}`}
+              onClick={() => setShowNshTerminal((p) => !p)}
+              title="NSH Shell Terminal"
+            >
+              <Terminal style={{ width: 12, height: 12 }} />
+              NSH Shell
+            </button>
 
             {/* Connection settings button */}
             <button
@@ -1720,6 +1968,203 @@ function App() {
             >
               Cancel
             </button>
+          </div>
+        )}
+
+        {/* MAVLink Raw Logs Panel */}
+        {showMavlinkLog && (
+          <div 
+            className="debug-floating-overlay mavlink-logs-overlay"
+            style={{
+              left: `${mavlinkPos.x}px`,
+              top: `${mavlinkPos.y}px`,
+              width: "480px",
+              height: "400px",
+            }}
+          >
+            <div className="dfo-header" onMouseDown={handleMavlinkMouseDown} style={{ cursor: "move" }}>
+              <div className="dfo-title">
+                <MessageSquare style={{ width: 14, height: 14, color: "var(--color-primary)" }} />
+                <span>MAVLink Raw Logs</span>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="btn btn-secondary py-1 px-2" style={{ fontSize: 9 }} onClick={() => {
+                  if (mavlinkActiveTab === "raw") setMavlinkLogs([]);
+                  else if (mavlinkActiveTab === "inspector") setInspectorData({});
+                  else if (mavlinkActiveTab === "sent") setSentMavlinkLogs([]);
+                }}>Clear</button>
+                <button className="dfo-close" onClick={() => setShowMavlinkLog(false)}>×</button>
+              </div>
+            </div>
+
+            {/* Tabs for MAVLink raw logs overlay */}
+            <div className="dfo-tabs">
+              <button 
+                className={`dfo-tab ${mavlinkActiveTab === "raw" ? "active" : ""}`}
+                onClick={() => setMavlinkActiveTab("raw")}
+              >
+                Raw Logs
+              </button>
+              <button 
+                className={`dfo-tab ${mavlinkActiveTab === "inspector" ? "active" : ""}`}
+                onClick={() => setMavlinkActiveTab("inspector")}
+              >
+                Inspector
+              </button>
+              <button 
+                className={`dfo-tab ${mavlinkActiveTab === "sent" ? "active" : ""}`}
+                onClick={() => setMavlinkActiveTab("sent")}
+              >
+                Sent Logs
+              </button>
+            </div>
+
+            {mavlinkActiveTab === "raw" && (
+              <div className="dfo-body" ref={mavlinkLogsEndRef}>
+                {mavlinkLogs.length === 0 ? (
+                  <div className="dfo-empty">No MAVLink messages received yet.</div>
+                ) : (
+                  mavlinkLogs.map((log, idx) => {
+                    const date = new Date(log.timestamp);
+                    const timeStr = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}.${String(date.getMilliseconds()).padStart(3, "0")}`;
+                    const isIncoming = log.direction === "IN";
+                    return (
+                      <div key={idx} className="mavlink-log-row">
+                        <span className="log-time">{timeStr}</span>
+                        <span className={`log-dir ${isIncoming ? "in" : "out"}`}>
+                          {isIncoming ? "IN" : "OUT"}
+                        </span>
+                        <span className="log-msg">{log.message}</span>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+
+            {mavlinkActiveTab === "inspector" && (
+              <div className="dfo-body">
+                {Object.keys(inspectorData).length === 0 ? (
+                  <div className="dfo-empty">No telemetry stats yet.</div>
+                ) : (
+                  <div className="inspector-list">
+                    {Object.entries(inspectorData).sort(([a], [b]) => a.localeCompare(b)).map(([msgType, stats]) => {
+                      const isExpanded = !!expandedMsgs[msgType];
+                      return (
+                        <div key={msgType} className="inspector-item">
+                          <div 
+                            className="inspector-item-header"
+                            onClick={() => setExpandedMsgs(prev => ({ ...prev, [msgType]: !isExpanded }))}
+                          >
+                            <span className="inspector-item-title">
+                              {isExpanded ? "▼" : "▶"} {msgType}
+                            </span>
+                            <div className="inspector-item-meta">
+                              <span>{stats.count} msgs</span>
+                              <span>{stats.rate} Hz</span>
+                            </div>
+                          </div>
+                          {isExpanded && (
+                            <div className="inspector-item-fields">
+                              <table className="inspector-table">
+                                <tbody>
+                                  {Object.entries(stats.fields).map(([fieldName, val]) => (
+                                    <tr key={fieldName}>
+                                      <td className="field-name">{fieldName}</td>
+                                      <td className="field-value">{val}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {mavlinkActiveTab === "sent" && (
+              <div className="dfo-body">
+                {sentMavlinkLogs.length === 0 ? (
+                  <div className="dfo-empty">No GCS commands sent yet.</div>
+                ) : (
+                  sentMavlinkLogs.map((log, idx) => {
+                    const date = new Date(log.timestamp);
+                    const timeStr = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}.${String(date.getMilliseconds()).padStart(3, "0")}`;
+                    return (
+                      <div key={idx} className="mavlink-log-row">
+                        <span className="log-time">{timeStr}</span>
+                        <span className="log-dir out" style={{ color: "#38bdf8", background: "rgba(56, 189, 248, 0.1)" }}>
+                          SENT
+                        </span>
+                        <span className="log-msg" style={{ color: "#e5e7eb" }}>{log.message}</span>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* NSH Terminal Panel */}
+        {showNshTerminal && (
+          <div 
+            className="debug-floating-overlay nsh-terminal-overlay"
+            style={{
+              left: `${nshPos.x}px`,
+              top: `${nshPos.y}px`,
+              width: "480px",
+              height: "400px",
+            }}
+          >
+            <div className="dfo-header" onMouseDown={handleNshMouseDown} style={{ cursor: "move" }}>
+              <div className="dfo-title">
+                <Terminal style={{ width: 14, height: 14, color: "var(--color-accent)" }} />
+                <span>NSH Shell Console</span>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="btn btn-secondary py-1 px-2" style={{ fontSize: 9 }} onClick={() => setNshLogs("nsh> ")}>Clear</button>
+                <button className="dfo-close" onClick={() => setShowNshTerminal(false)}>×</button>
+              </div>
+            </div>
+            <div className="dfo-body" style={{ background: "#0c0f1d", padding: 0, display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+              <pre className="nsh-terminal-screen" ref={nshLogsEndRef}>{nshLogs}</pre>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!nshInput.trim()) return;
+                  const cmd = nshInput.trim();
+                  
+                  // Optimistically append command to terminal screen
+                  setNshLogs((prev) => prev + cmd + "\n");
+                  
+                  // Send to drone
+                  executeSliderAction({
+                    type: "nsh_command",
+                    label: "NSH Command",
+                    data: { command: cmd }
+                  });
+                  
+                  setNshInput("");
+                }}
+                className="nsh-input-form"
+              >
+                <span className="nsh-prompt">nsh&gt;</span>
+                <input
+                  type="text"
+                  value={nshInput}
+                  onChange={(e) => setNshInput(e.target.value)}
+                  placeholder="Enter NSH command (e.g. help, ver, status)..."
+                  className="nsh-terminal-input"
+                  autoFocus
+                />
+                <button type="submit" className="nsh-send-btn">Send</button>
+              </form>
+            </div>
           </div>
         )}
 
