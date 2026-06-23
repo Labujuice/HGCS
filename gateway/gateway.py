@@ -88,13 +88,16 @@ class Gateway:
         if self.use_mock:
             print("⚠️ Running in MOCK mode (Simulating 2 Vehicles dynamically).")
             self.threads.append(threading.Thread(target=self._mock_telemetry_loop, daemon=True))
+            # In mock mode, _mock_telemetry_loop is the SOLE consumer of to_drone_queue.
+            # Do NOT start _mission_worker_loop — it uses blocking queue.get() which would
+            # race against and steal commands before _mock_telemetry_loop can see them,
+            # preventing _mock_log_outgoing_msg from ever being called (Sent Logs stay empty).
         else:
             # We will start default SITL MAVLink UDP connection
             default_conn = "udp:127.0.0.1:14540"
             print(f"🔌 Initializing default MAVLink connection on: {default_conn}")
             self.add_connection(default_conn)
-            
-        self.threads.append(threading.Thread(target=self._mission_worker_loop, daemon=True))
+            self.threads.append(threading.Thread(target=self._mission_worker_loop, daemon=True))
         
         # Start UI Static Server if enabled
         if self.serve_ui:
@@ -489,6 +492,9 @@ class Gateway:
                             print(f"[Mock #{vehicle_id}] Guided Orbit requested. Center Lat/Lon: {state['target_lat']},{state['target_lon']}, Radius: {state['orbit_radius']}m")
                             # Mock outgoing MAVLink log
                             self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_INT {{target_system : {vehicle_id}, target_component : 1, frame : 6, command : 34, current : 2, autocontinue : 0, param1 : {state['orbit_radius']}, param2 : nan, param3 : 0.0, param4 : nan, x : {int(state['target_lat']*1e7)}, y : {int(state['target_lon']*1e7)}, z : {state['target_alt']}}}")
+                        elif cmd_type == "nsh_command":
+                            # NSH in mock mode: _handle_nsh_command has its own mock branch
+                            self._handle_nsh_command(vehicle_id, cmd.get("command", ""))
             except queue.Empty:
                 pass
                 
@@ -815,12 +821,10 @@ class Gateway:
                 }
             }))
 
-    # --- DYNAMIC COMMAND / MISSION ROUTER ---
+    # --- DYNAMIC COMMAND / MISSION ROUTER (REAL / SITL MODE ONLY) ---
+    # In mock mode, this loop is NOT started. All commands are handled by _mock_telemetry_loop
+    # which also calls _mock_log_outgoing_msg to generate Sent Logs.
     def _mission_worker_loop(self):
-        # Commands that are handled exclusively by _mock_telemetry_loop when in mock mode.
-        # If _mission_worker_loop consumed these in mock mode (with a blocking get), the
-        # mock loop would never see them, causing state to never change and Sent Logs to be empty.
-        MOCK_ONLY_TASKS = {"arm", "set_mode", "takeoff", "land", "rtl", "pause", "go_to", "orbit", "change_speed"}
         while self.running:
             try:
                 task = self.to_drone_queue.get(timeout=0.5)
@@ -831,31 +835,24 @@ class Gateway:
                     self._handle_upload_mission(task)
                 elif task_type == "nsh_command":
                     self._handle_nsh_command(vehicle_id, task.get("command", ""))
-                elif self.use_mock:
-                    # In mock mode, flight-control commands belong to _mock_telemetry_loop.
-                    # Put the task back so it can be consumed there.
-                    if task_type in MOCK_ONLY_TASKS:
-                        self.to_drone_queue.put(task)
-                        time.sleep(0.01)  # yield so _mock_telemetry_loop can run
-                else:
-                    if task_type == "arm":
-                        self._handle_arm_disarm(vehicle_id, task.get("armed", False))
-                    elif task_type == "set_mode":
-                        self._handle_change_mode(vehicle_id, task.get("mode", "HOLD"))
-                    elif task_type == "takeoff":
-                        self._handle_takeoff(vehicle_id, task.get("altitude", 10.0))
-                    elif task_type == "land":
-                        self._handle_land(vehicle_id)
-                    elif task_type == "rtl":
-                        self._handle_rtl(vehicle_id)
-                    elif task_type == "pause":
-                        self._handle_pause(vehicle_id)
-                    elif task_type == "go_to":
-                        self._handle_go_to(vehicle_id, task.get("latitude"), task.get("longitude"), task.get("altitude"))
-                    elif task_type == "orbit":
-                        self._handle_orbit(vehicle_id, task.get("latitude"), task.get("longitude"), task.get("altitude"), task.get("radius", 20.0))
-                    elif task_type == "change_speed":
-                        self._handle_change_speed(vehicle_id, task.get("speed", 10.0))
+                elif task_type == "arm":
+                    self._handle_arm_disarm(vehicle_id, task.get("armed", False))
+                elif task_type == "set_mode":
+                    self._handle_change_mode(vehicle_id, task.get("mode", "HOLD"))
+                elif task_type == "takeoff":
+                    self._handle_takeoff(vehicle_id, task.get("altitude", 10.0))
+                elif task_type == "land":
+                    self._handle_land(vehicle_id)
+                elif task_type == "rtl":
+                    self._handle_rtl(vehicle_id)
+                elif task_type == "pause":
+                    self._handle_pause(vehicle_id)
+                elif task_type == "go_to":
+                    self._handle_go_to(vehicle_id, task.get("latitude"), task.get("longitude"), task.get("altitude"))
+                elif task_type == "orbit":
+                    self._handle_orbit(vehicle_id, task.get("latitude"), task.get("longitude"), task.get("altitude"), task.get("radius", 20.0))
+                elif task_type == "change_speed":
+                    self._handle_change_speed(vehicle_id, task.get("speed", 10.0))
                     
             except queue.Empty:
                 pass
