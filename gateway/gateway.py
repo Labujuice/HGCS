@@ -55,6 +55,12 @@ class Gateway:
         self.mission_statuses: Dict[int, Dict[str, Any]] = {}
         self.mission_lock = threading.Lock()
         
+        # Autopilot types for connected vehicles: vehicle_id -> MAV_AUTOPILOT enum value (e.g. 12 is MAV_AUTOPILOT_PX4)
+        self.vehicle_autopilots: Dict[int, int] = {
+            1: 12, # Pre-fill mock vehicles with PX4
+            2: 12
+        }
+        
         # Active threads list
         self.threads = []
         self.running = True
@@ -192,6 +198,7 @@ class Gateway:
                 
                 # Check for heartbeat to get armed state and flight mode
                 if msg_type == 'HEARTBEAT':
+                    self.vehicle_autopilots[vehicle_id] = msg.autopilot
                     armed = (msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED) > 0
                     custom_mode = msg.custom_mode
                     type_drone = msg.type
@@ -746,20 +753,26 @@ class Gateway:
             
             # Map waypoints
             mav_items = []
-            home_lat = waypoints[0].get("latitude", 0.0)
-            home_lon = waypoints[0].get("longitude", 0.0)
-            home_alt = 0.0
             
-            # Add home pos at seq 0
-            mav_items.append({
-                "seq": 0,
-                "command": mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
-                "frame": 0,
-                "current": 0,
-                "autocontinue": 1,
-                "p1": 0, "p2": 0, "p3": 0, "p4": 0,
-                "x": int(home_lat * 1e7), "y": int(home_lon * 1e7), "z": float(home_alt)
-            })
+            # Determine if we should prepend home point at seq 0.
+            # PX4 does not use seq 0 as Home; it treats seq 0 as the first mission item.
+            # ArduPilot uses seq 0 as Home.
+            is_px4 = self.vehicle_autopilots.get(vehicle_id, 12) == 12 # 12 is MAV_AUTOPILOT_PX4
+            
+            if not is_px4:
+                home_lat = waypoints[0].get("latitude", 0.0)
+                home_lon = waypoints[0].get("longitude", 0.0)
+                home_alt = 0.0
+                # Add home pos at seq 0 for non-PX4 autopilots
+                mav_items.append({
+                    "seq": 0,
+                    "command": mavutil.mavlink.MAV_CMD_NAV_WAYPOINT,
+                    "frame": 0,
+                    "current": 0,
+                    "autocontinue": 1,
+                    "p1": 0, "p2": 0, "p3": 0, "p4": 0,
+                    "x": int(home_lat * 1e7), "y": int(home_lon * 1e7), "z": float(home_alt)
+                })
             
             for wp in waypoints:
                 cmd_str = wp.get("command", "WAYPOINT")
