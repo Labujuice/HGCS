@@ -184,6 +184,13 @@ class Gateway:
                         if self.debug:
                             print(f"📤 [OUT] Link {connection_string}: {msg}")
                         target_sys = getattr(msg, 'target_system', 0)
+                        # Fallback: if target_system is 0 (some msgs don't have this field),
+                        # look up the vehicle_id that maps to this connection_string
+                        if target_sys == 0:
+                            for vid, conn in self.vehicle_link_mapping.items():
+                                if conn == connection_string:
+                                    target_sys = vid
+                                    break
                         self.to_ws_queue.put(json.dumps({
                             "type": "mavlink_log",
                             "data": {
@@ -810,6 +817,10 @@ class Gateway:
 
     # --- DYNAMIC COMMAND / MISSION ROUTER ---
     def _mission_worker_loop(self):
+        # Commands that are handled exclusively by _mock_telemetry_loop when in mock mode.
+        # If _mission_worker_loop consumed these in mock mode (with a blocking get), the
+        # mock loop would never see them, causing state to never change and Sent Logs to be empty.
+        MOCK_ONLY_TASKS = {"arm", "set_mode", "takeoff", "land", "rtl", "pause", "go_to", "orbit", "change_speed"}
         while self.running:
             try:
                 task = self.to_drone_queue.get(timeout=0.5)
@@ -820,7 +831,13 @@ class Gateway:
                     self._handle_upload_mission(task)
                 elif task_type == "nsh_command":
                     self._handle_nsh_command(vehicle_id, task.get("command", ""))
-                elif not self.use_mock:
+                elif self.use_mock:
+                    # In mock mode, flight-control commands belong to _mock_telemetry_loop.
+                    # Put the task back so it can be consumed there.
+                    if task_type in MOCK_ONLY_TASKS:
+                        self.to_drone_queue.put(task)
+                        time.sleep(0.01)  # yield so _mock_telemetry_loop can run
+                else:
                     if task_type == "arm":
                         self._handle_arm_disarm(vehicle_id, task.get("armed", False))
                     elif task_type == "set_mode":
