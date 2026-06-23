@@ -148,6 +148,18 @@ html, body {
 .qgc-readiness.disarmed{ color: #f59e0b; border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.08); }
 .qgc-readiness.disconnected { color: var(--text-muted); border-color: var(--border-color); background: transparent; }
 
+.autopilot-badge {
+  font-size: 9px;
+  background: rgba(14, 165, 233, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(14, 165, 233, 0.3);
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: 8px;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+}
+
 /* Topbar telemetry pills */
 .topbar-tele-strip {
   display: flex;

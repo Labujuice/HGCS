@@ -189,6 +189,10 @@ class Gateway:
                 msg_type = msg.get_type()
                 src_system = msg.get_srcSystem()
                 
+                # Ignore invalid system IDs (0 is broadcast/invalid, >=255 are GCS/controllers)
+                if src_system <= 0 or src_system >= 255:
+                    continue
+                    
                 if vehicle_id is None or vehicle_id != src_system:
                     vehicle_id = src_system
                     # Bind this vehicle ID to this master interface and connection string
@@ -203,41 +207,60 @@ class Gateway:
                     custom_mode = msg.custom_mode
                     type_drone = msg.type
                     
-                    # main_mode is byte 3 of custom_mode, sub_mode is byte 4
-                    main_mode = (custom_mode >> 8) & 0xFF
-                    sub_mode = (custom_mode >> 16) & 0xFF
-                    
-                    if type_drone in [mavutil.mavlink.MAV_TYPE_QUADROTOR, mavutil.mavlink.MAV_TYPE_HEXAROTOR, 
-                                      mavutil.mavlink.MAV_TYPE_FIXED_WING, mavutil.mavlink.MAV_TYPE_OCTOROTOR]:
-                        if main_mode == 1:
-                            mode_str = "MANUAL"
-                        elif main_mode == 2:
-                            mode_str = "ALTCTL"
-                        elif main_mode == 3:
-                            mode_str = "POSCTL"
-                        elif main_mode == 4: # Auto
-                            if sub_mode == 2:
-                                mode_str = "TAKEOFF"
-                            elif sub_mode == 3:
-                                mode_str = "HOLD"
-                            elif sub_mode == 4:
-                                mode_str = "MISSION"
-                            elif sub_mode == 5:
-                                mode_str = "RTL"
-                            elif sub_mode == 6:
-                                mode_str = "LAND"
+                    is_px4 = msg.autopilot == 12
+                    if is_px4:
+                        # main_mode is byte 3 of custom_mode, sub_mode is byte 4
+                        main_mode = (custom_mode >> 8) & 0xFF
+                        sub_mode = (custom_mode >> 16) & 0xFF
+                        
+                        if type_drone in [mavutil.mavlink.MAV_TYPE_QUADROTOR, mavutil.mavlink.MAV_TYPE_HEXAROTOR, 
+                                          mavutil.mavlink.MAV_TYPE_FIXED_WING, mavutil.mavlink.MAV_TYPE_OCTOROTOR]:
+                            if main_mode == 1:
+                                mode_str = "MANUAL"
+                            elif main_mode == 2:
+                                mode_str = "ALTCTL"
+                            elif main_mode == 3:
+                                mode_str = "POSCTL"
+                            elif main_mode == 4: # Auto
+                                if sub_mode == 2:
+                                    mode_str = "TAKEOFF"
+                                elif sub_mode == 3:
+                                    mode_str = "HOLD"
+                                elif sub_mode == 4:
+                                    mode_str = "MISSION"
+                                elif sub_mode == 5:
+                                    mode_str = "RTL"
+                                elif sub_mode == 6:
+                                    mode_str = "LAND"
+                                else:
+                                    mode_str = f"AUTO_{sub_mode}"
+                            elif main_mode == 5:
+                                mode_str = "ACRO"
+                            elif main_mode == 6:
+                                mode_str = "OFFBOARD"
+                            elif main_mode == 7:
+                                mode_str = "STABILIZED"
                             else:
-                                mode_str = f"AUTO_{sub_mode}"
-                        elif main_mode == 5:
-                            mode_str = "ACRO"
-                        elif main_mode == 6:
-                            mode_str = "OFFBOARD"
-                        elif main_mode == 7:
-                            mode_str = "STABILIZED"
+                                mode_str = f"PX4_MODE_{main_mode}_{sub_mode}"
                         else:
-                            mode_str = f"PX4_MODE_{main_mode}_{sub_mode}"
+                            mode_str = f"MODE_{custom_mode}"
                     else:
-                        mode_str = f"MODE_{custom_mode}"
+                        # ArduPilot Copter/Sub/etc.
+                        apm_modes = {
+                            0: "STABILIZE",
+                            1: "ACRO",
+                            2: "ALT_HOLD",
+                            3: "MISSION",  # Map AUTO to MISSION
+                            4: "GUIDED",
+                            5: "HOLD",     # Map LOITER to HOLD
+                            6: "RTL",
+                            7: "CIRCLE",
+                            9: "LAND",
+                            11: "DRIFT",
+                            16: "POSHOLD",
+                            17: "BRAKE"
+                        }
+                        mode_str = apm_modes.get(custom_mode, f"APM_MODE_{custom_mode}")
                         
                 elif msg_type == 'ATTITUDE':
                     roll = math.degrees(msg.roll)
@@ -284,7 +307,8 @@ class Gateway:
                             "battery_percent": battery_percent,
                             "battery_voltage": round(battery_voltage, 2),
                             "gps_satellites": gps_satellites,
-                            "gps_fix_type": gps_fix_type
+                            "gps_fix_type": gps_fix_type,
+                            "autopilot": "PX4" if self.vehicle_autopilots.get(vehicle_id, 12) == 12 else "ArduPilot"
                         },
                         "pose": {
                             "roll": round(roll, 2),
@@ -631,7 +655,8 @@ class Gateway:
                             "battery_percent": battery_pct,
                             "battery_voltage": round(battery_volts, 1),
                             "gps_satellites": 16 if vid == 1 else 14,
-                            "gps_fix_type": 4
+                            "gps_fix_type": 4,
+                            "autopilot": "PX4"
                         },
                         "pose": {
                             "roll": round(roll, 1),
@@ -745,11 +770,7 @@ class Gateway:
             target_sys = vehicle_id
             target_comp = 1
             
-            self._update_mission_status(vehicle_id, mission_id, "UPLOADING", 15, "Clearing old mission...")
-            master.mav.mission_clear_all_send(target_sys, target_comp)
-            
-            # Allow some response time
-            time.sleep(0.1)
+            self._update_mission_status(vehicle_id, mission_id, "UPLOADING", 15, "Preparing waypoints...")
             
             # Map waypoints
             mav_items = []
@@ -806,57 +827,75 @@ class Gateway:
                     "x": int(lat * 1e7), "y": int(lon * 1e7), "z": float(alt)
                 })
                 
+            print(f"📋 Compiled MAVLink mission items to send to Vehicle #{vehicle_id}:")
+            for item in mav_items:
+                print(f"  Seq: {item['seq']}, Cmd: {item['command']}, Frame: {item['frame']}, x: {item['x']}, y: {item['y']}, z: {item['z']}, p1: {item['p1']}, p2: {item['p2']}, p3: {item['p3']}, p4: {item['p4']}")
+                
             count = len(mav_items)
             master.mav.mission_count_send(target_sys, target_comp, count)
             
-            retries = 3
+            retries = 5
             last_request_time = time.time()
+            ack_msg = None
             
             while True:
-                msg = master.recv_match(type=['MISSION_REQUEST', 'MISSION_REQUEST_INT'], blocking=True, timeout=1.0)
+                msg = master.recv_match(type=['MISSION_REQUEST', 'MISSION_REQUEST_INT', 'MISSION_ACK'], blocking=True, timeout=1.0)
                 if not msg:
                     if time.time() - last_request_time > 2.0:
                         retries -= 1
                         if retries <= 0:
-                            raise TimeoutError("Timeout waiting for MISSION_REQUEST")
+                            raise TimeoutError("Timeout waiting for MISSION_REQUEST or MISSION_ACK")
                         print(f"⚠️ Resending mission count to #{vehicle_id} (Retries left: {retries})")
                         master.mav.mission_count_send(target_sys, target_comp, count)
                         last_request_time = time.time()
                     continue
                     
-                retries = 3
+                retries = 5
                 last_request_time = time.time()
+                
+                if msg.get_type() == 'MISSION_ACK':
+                    ack_msg = msg
+                    break
+                    
                 seq = msg.seq
                 if seq >= count:
-                    break
+                    print(f"⚠️ Received request for seq {seq} >= count {count}, ignoring")
+                    continue
                     
                 item = mav_items[seq]
                 pct = int(20 + (seq / count) * 70)
                 self._update_mission_status(vehicle_id, mission_id, "UPLOADING", pct, f"Sending waypoint {seq} of {count-1}")
                 
                 if msg.get_type() == 'MISSION_REQUEST':
-                    # Respond with legacy float MISSION_ITEM
+                    # Legacy float MISSION_ITEM: Map INT frames to FLOAT frames
+                    frame = item["frame"]
+                    if frame == 11:
+                        frame = 3
+                    elif frame == 5:
+                        frame = 0
+                    
                     master.mav.mission_item_send(
                         target_sys, target_comp,
-                        item["seq"], item["frame"], item["command"],
+                        item["seq"], frame, item["command"],
                         item["current"], item["autocontinue"],
                         item["p1"], item["p2"], item["p3"], item["p4"],
                         float(item["x"]) / 1e7, float(item["y"]) / 1e7, item["z"]
                     )
                 else:
-                    # Respond with MISSION_ITEM_INT
+                    # MISSION_ITEM_INT: Map FLOAT frames to INT frames
+                    frame = item["frame"]
+                    if frame == 3:
+                        frame = 11
+                    elif frame == 0:
+                        frame = 5
+                        
                     master.mav.mission_item_int_send(
                         target_sys, target_comp,
-                        item["seq"], item["frame"], item["command"],
+                        item["seq"], frame, item["command"],
                         item["current"], item["autocontinue"],
                         item["p1"], item["p2"], item["p3"], item["p4"],
                         item["x"], item["y"], item["z"]
                     )
-                
-                if seq == count - 1:
-                    break
-                    
-            ack_msg = master.recv_match(type='MISSION_ACK', blocking=True, timeout=2.0)
             if ack_msg:
                 if ack_msg.type == mavutil.mavlink.MAV_MISSION_ACCEPTED:
                     self._update_mission_status(vehicle_id, mission_id, "SUCCESS", 100, "Mission uploaded successfully")
@@ -887,22 +926,41 @@ class Gateway:
         if not master:
             return
             
-        PX4_CUSTOM_MAIN_MODE_AUTO = 4
-        mode_mapping = {
-            "HOLD": (PX4_CUSTOM_MAIN_MODE_AUTO, 3),
-            "MISSION": (PX4_CUSTOM_MAIN_MODE_AUTO, 4),
-            "RTL": (PX4_CUSTOM_MAIN_MODE_AUTO, 5),
-        }
+        is_px4 = self.vehicle_autopilots.get(vehicle_id, 12) == 12 # 12 is MAV_AUTOPILOT_PX4
         
-        if mode in mode_mapping:
-            main_mode, sub_mode = mode_mapping[mode]
-            custom_mode = (sub_mode << 16) | (main_mode << 8)
-            master.mav.set_mode_send(
-                vehicle_id,
-                mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
-                custom_mode
-            )
-            print(f"⚙️ MAVLink mode set for Vehicle #{vehicle_id}: PX4 {mode} (main {main_mode}, sub {sub_mode})")
+        if is_px4:
+            PX4_CUSTOM_MAIN_MODE_AUTO = 4
+            mode_mapping = {
+                "HOLD": (PX4_CUSTOM_MAIN_MODE_AUTO, 3),
+                "MISSION": (PX4_CUSTOM_MAIN_MODE_AUTO, 4),
+                "RTL": (PX4_CUSTOM_MAIN_MODE_AUTO, 5),
+            }
+            if mode in mode_mapping:
+                main_mode, sub_mode = mode_mapping[mode]
+                custom_mode = (sub_mode << 16) | (main_mode << 8)
+                master.mav.set_mode_send(
+                    vehicle_id,
+                    mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                    custom_mode
+                )
+                print(f"⚙️ MAVLink mode set for Vehicle #{vehicle_id}: PX4 {mode} (main {main_mode}, sub {sub_mode})")
+        else:
+            # ArduPilot Copter custom modes
+            # AUTO = 3, LOITER = 5, RTL = 6, LAND = 9
+            mode_mapping = {
+                "HOLD": 5,     # LOITER
+                "MISSION": 3,  # AUTO
+                "RTL": 6,      # RTL
+                "LAND": 9      # LAND
+            }
+            if mode in mode_mapping:
+                custom_mode = mode_mapping[mode]
+                master.mav.set_mode_send(
+                    vehicle_id,
+                    mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+                    custom_mode
+                )
+                print(f"⚙️ MAVLink mode set for Vehicle #{vehicle_id}: ArduPilot {mode} ({custom_mode})")
 
     def _handle_takeoff(self, vehicle_id: int, altitude: float):
         master = self.vehicle_masters.get(vehicle_id)

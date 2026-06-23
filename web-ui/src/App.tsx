@@ -39,6 +39,7 @@ interface VehicleTelemetry {
     battery_voltage: number;
     gps_satellites: number;
     gps_fix_type: number;
+    autopilot?: string;
   };
   pose: {
     roll: number;
@@ -335,6 +336,7 @@ function App() {
       battery_voltage: 25.2,
       gps_satellites: 12,
       gps_fix_type: 4,
+      autopilot: "PX4",
     },
     pose: { roll: 0.0, pitch: 0.0, yaw: 0.0, heading: 0 },
     navigation: {
@@ -362,6 +364,7 @@ function App() {
         armed: false,
         mode: "HOLD",
         altitude: 0.0,
+        autopilot: "PX4",
         fullData: createEmptyTelemetry(1, 24.7746, 121.0446),
       },
       2: {
@@ -372,6 +375,7 @@ function App() {
         armed: false,
         mode: "HOLD",
         altitude: 0.0,
+        autopilot: "PX4",
         fullData: createEmptyTelemetry(2, 24.776, 121.0465),
       },
     };
@@ -566,6 +570,7 @@ function App() {
           armed: state.armed,
           mode: state.mode,
           altitude: parseFloat(state.alt.toFixed(1)),
+          autopilot: "PX4",
           fullData: {
             timestamp: Date.now(),
             vehicle_id: vid,
@@ -576,6 +581,7 @@ function App() {
               battery_voltage: parseFloat(state.batteryVolts.toFixed(1)),
               gps_satellites: state.armed ? 18 : 12,
               gps_fix_type: 4,
+              autopilot: "PX4",
             },
             pose: { roll, pitch, yaw: state.yaw, heading: Math.round(state.yaw) },
             navigation: {
@@ -632,6 +638,7 @@ function App() {
                 armed: payload.data.status.armed,
                 mode: payload.data.status.mode,
                 altitude: payload.data.navigation.relative_altitude,
+                autopilot: payload.data.status.autopilot,
                 fullData: payload.data,
               },
             }));
@@ -968,6 +975,9 @@ function App() {
             >
               {telemetry.status.armed ? "▶ ARMED" : "■ DISARMED"}{" "}
               — {telemetry.status.mode}
+              {telemetry.status.autopilot && (
+                <span className="autopilot-badge">{telemetry.status.autopilot}</span>
+              )}
             </div>
           ) : (
             <div className="qgc-readiness disconnected">Not Connected</div>
@@ -1024,9 +1034,15 @@ function App() {
                     setSelectedWpIndex(null);
                   }}
                 >
-                  {vehicleList.map((id) => (
-                    <option key={id} value={id}>#{id}</option>
-                  ))}
+                  {vehicleList.map((id) => {
+                    const vTelem = vehicles[id];
+                    const ap = vTelem?.autopilot || vTelem?.fullData?.status?.autopilot;
+                    return (
+                      <option key={id} value={id}>
+                        #{id} {ap ? `(${ap})` : ""}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
             )}

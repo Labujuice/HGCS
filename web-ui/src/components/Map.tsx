@@ -30,6 +30,7 @@ export interface MapVehicle {
   armed: boolean;
   mode: string;
   altitude?: number;
+  autopilot?: string;
 }
 
 interface MapProps {
@@ -275,6 +276,8 @@ export const FlightMap: React.FC<MapProps> = ({
             <span style="font-size:9px;background:rgba(14,165,233,0.15);padding:1px 5px;border-radius:3px;color:#38bdf8;border:1px solid rgba(14,165,233,0.3);">${vehicle.mode}</span>
           </div>
           <div style="display:grid;grid-template-columns:auto auto;gap:2px 10px;">
+            <span style="color:#6b7280;font-size:9px;">Autopilot</span>
+            <span style="font-weight:700;color:#a78bfa;">${vehicle.autopilot || "PX4"}</span>
             <span style="color:#6b7280;font-size:9px;">Altitude</span>
             <span style="font-weight:700;color:#38bdf8;">${(vehicle.altitude ?? 0).toFixed(1)} m</span>
             <span style="color:#6b7280;font-size:9px;">Heading</span>
