@@ -914,10 +914,7 @@ html, body {
    ═══════════════════════════════════════════════════════════════ */
 .debug-floating-overlay {
   position: absolute;
-  top: calc(var(--topbar-h) + 12px);
   z-index: 500;
-  width: 480px;
-  max-height: calc(100vh - var(--topbar-h) - 40px);
   background: rgba(8, 12, 24, 0.9);
   border: 1px solid rgba(56, 189, 248, 0.25);
   border-radius: var(--radius-lg);
@@ -927,15 +924,17 @@ html, body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  resize: both;
+  min-width: 320px;
+  min-height: 240px;
 }
 
 .mavlink-logs-overlay {
-  right: 12px;
+  /* Initial size and positions controlled by React state */
 }
 
 .nsh-terminal-overlay {
-  right: 504px; /* Render next to MAVLink logs panel if both are open */
+  /* Initial size and positions controlled by React state */
 }
 
 .dfo-header {
@@ -945,6 +944,8 @@ html, body {
   padding: 8px 12px;
   background: rgba(255, 255, 255, 0.03);
   border-bottom: 1px solid var(--border-color);
+  user-select: none;
+  flex-shrink: 0;
 }
 
 .dfo-title {
@@ -973,6 +974,42 @@ html, body {
   color: var(--color-danger);
 }
 
+/* Tabs inside float overlays */
+.dfo-tabs {
+  display: flex;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.dfo-tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  padding: 8px 0;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: all var(--transition);
+  text-align: center;
+}
+
+.dfo-tab:hover {
+  color: var(--text-main);
+  background: rgba(255, 255, 255, 0.01);
+}
+
+.dfo-tab.active {
+  color: var(--color-primary);
+  border-bottom: 2px solid var(--color-primary);
+  background: rgba(56, 189, 248, 0.05);
+}
+
 .dfo-body {
   flex: 1;
   overflow-y: auto;
@@ -980,7 +1017,7 @@ html, body {
   font-family: var(--font-mono);
   font-size: 10px;
   line-height: 1.4;
-  max-height: 350px;
+  min-height: 0; /* Important for scroll container inside flexbox */
 }
 
 .dfo-empty {
@@ -1024,6 +1061,75 @@ html, body {
   color: #e5e7eb;
 }
 
+/* MAVLink Inspector Specific layout */
+.inspector-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.inspector-item {
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.01);
+}
+
+.inspector-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--transition);
+}
+.inspector-item-header:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.inspector-item-title {
+  font-weight: 700;
+  color: #38bdf8;
+  font-size: 10px;
+}
+
+.inspector-item-meta {
+  display: flex;
+  gap: 12px;
+  font-size: 8px;
+  color: var(--text-muted);
+}
+
+.inspector-item-fields {
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  border-top: 1px solid rgba(255, 255, 255, 0.03);
+  font-size: 9px;
+}
+
+.inspector-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.inspector-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+}
+
+.inspector-table td.field-name {
+  color: #a7f3d0;
+  font-weight: bold;
+  width: 40%;
+}
+
+.inspector-table td.field-value {
+  color: #f3f4f6;
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
 /* NSH Console styles */
 .nsh-terminal-screen {
   background: #090c15;
@@ -1033,7 +1139,7 @@ html, body {
   font-family: var(--font-mono);
   font-size: 9px;
   line-height: 1.4;
-  height: 280px;
+  flex: 1;
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-all;

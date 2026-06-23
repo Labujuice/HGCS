@@ -250,8 +250,8 @@ class Gateway:
                     is_px4 = msg.autopilot == 12
                     if is_px4:
                         # main_mode is byte 3 of custom_mode, sub_mode is byte 4
-                        main_mode = (custom_mode >> 8) & 0xFF
-                        sub_mode = (custom_mode >> 16) & 0xFF
+                        main_mode = (custom_mode >> 16) & 0xFF
+                        sub_mode = (custom_mode >> 24) & 0xFF
                         
                         if type_drone in [mavutil.mavlink.MAV_TYPE_QUADROTOR, mavutil.mavlink.MAV_TYPE_HEXAROTOR, 
                                           mavutil.mavlink.MAV_TYPE_FIXED_WING, mavutil.mavlink.MAV_TYPE_OCTOROTOR]:
@@ -1022,7 +1022,7 @@ class Gateway:
             }
             if mode in mode_mapping:
                 main_mode, sub_mode = mode_mapping[mode]
-                custom_mode = (sub_mode << 16) | (main_mode << 8)
+                custom_mode = (sub_mode << 24) | (main_mode << 16)
                 master.mav.set_mode_send(
                     vehicle_id,
                     mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
@@ -1248,7 +1248,7 @@ class Gateway:
             data[:len(chunk)] = chunk
             # flags = 3: EXCLUSIVE (1) | RESPOND (2)
             master.mav.serial_control_send(
-                0, # device (0 = MAVLink shell)
+                10, # device (10 = MAVLink shell)
                 3, # flags
                 0, # timeout
                 0, # baudrate
