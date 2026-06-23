@@ -104,6 +104,11 @@ export const FlightMap: React.FC<MapProps> = ({
   const [isFollowing, setIsFollowing] = useState(true);
   const lastCenterTimeRef = useRef<number>(0);
 
+  // ─── Flight Trajectory Refs ─────────────────────────────────
+  const trajectoriesRef = useRef<Record<number, L.LatLngLiteral[]>>({});
+  const prevArmedRef = useRef<Record<number, boolean>>({});
+  const trajectoryPolylinesRef = useRef<Record<number, L.Polyline>>({});
+
   // ─── 1. Map initialization ─────────────────────────────────
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
@@ -510,6 +515,75 @@ export const FlightMap: React.FC<MapProps> = ({
       lastCenterTimeRef.current = now;
     }
   }, [vehicles, activeVehicleId, isFollowing]);
+
+  // ─── 6. Flight Trajectory Drawing ──────────────────────────
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    Object.values(vehicles).forEach((v) => {
+      const vId = v.id;
+      const latLng = { lat: v.latitude, lng: v.longitude };
+
+      if (!v.latitude || !v.longitude || (v.latitude === 0 && v.longitude === 0)) {
+        return;
+      }
+
+      const wasArmed = prevArmedRef.current[vId] || false;
+      const isArmed = v.armed;
+
+      // Detect rising edge of arm: when vehicle transitions from disarmed -> armed
+      if (isArmed && !wasArmed) {
+        // Clear existing trajectory coordinates for this vehicle
+        trajectoriesRef.current[vId] = [];
+
+        // Remove existing polyline from map
+        if (trajectoryPolylinesRef.current[vId]) {
+          trajectoryPolylinesRef.current[vId].remove();
+          delete trajectoryPolylinesRef.current[vId];
+        }
+
+        console.log(`🛸 Vehicle #${vId} Armed. Trajectory cleared.`);
+      }
+
+      // If currently armed, append position to trajectory
+      if (isArmed) {
+        if (!trajectoriesRef.current[vId]) {
+          trajectoriesRef.current[vId] = [];
+        }
+
+        const path = trajectoriesRef.current[vId];
+        const last = path[path.length - 1];
+        if (!last || last.lat !== latLng.lat || last.lng !== latLng.lng) {
+          path.push(latLng);
+
+          // Update or create the polyline on the map
+          if (trajectoryPolylinesRef.current[vId]) {
+            trajectoryPolylinesRef.current[vId].setLatLngs(path);
+          } else {
+            trajectoryPolylinesRef.current[vId] = L.polyline(path, {
+              color: "#38bdf8", // Sky blue/cyan
+              weight: 3,
+              opacity: 0.85,
+              dashArray: "5, 5",
+            }).addTo(map);
+          }
+        }
+      }
+
+      prevArmedRef.current[vId] = isArmed;
+    });
+  }, [vehicles]);
+
+  // Clean up all trajectory polylines on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(trajectoryPolylinesRef.current).forEach((polyline) => {
+        polyline.remove();
+      });
+      trajectoryPolylinesRef.current = {};
+    };
+  }, []);
 
   // ─── Handlers ─────────────────────────────────────────────
   const locateActiveDrone = () => {

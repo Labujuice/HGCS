@@ -156,26 +156,43 @@ class Gateway:
                 self.active_links[connection_string] = master
                 print(f"✅ MAVLink Link established: {connection_string}")
                 
-                if self.debug:
-                    # Wrap recv_match to print incoming messages
-                    if not hasattr(master, '_wrapped_recv_match'):
-                        orig_recv_match = master.recv_match
-                        def wrapped_recv_match(*args, **kwargs):
-                            m = orig_recv_match(*args, **kwargs)
-                            if m is not None:
+                # Wrap recv_match to print incoming messages and queue to WS
+                if not hasattr(master, '_wrapped_recv_match'):
+                    orig_recv_match = master.recv_match
+                    def wrapped_recv_match(*args, **kwargs):
+                        m = orig_recv_match(*args, **kwargs)
+                        if m is not None:
+                            if self.debug:
                                 print(f"📥 [IN] Link {connection_string}: {m}")
-                            return m
-                        master.recv_match = wrapped_recv_match
-                        master._wrapped_recv_match = True
-                    
-                    # Wrap send to print outgoing messages
-                    if not hasattr(master.mav, '_wrapped_send'):
-                        orig_send = master.mav.send
-                        def wrapped_send(msg, *args, **kwargs):
+                            self.to_ws_queue.put(json.dumps({
+                                "type": "mavlink_log",
+                                "data": {
+                                    "direction": "IN",
+                                    "timestamp": time.time() * 1000,
+                                    "message": str(m)
+                                }
+                            }))
+                        return m
+                    master.recv_match = wrapped_recv_match
+                    master._wrapped_recv_match = True
+                
+                # Wrap send to print outgoing messages and queue to WS
+                if not hasattr(master.mav, '_wrapped_send'):
+                    orig_send = master.mav.send
+                    def wrapped_send(msg, *args, **kwargs):
+                        if self.debug:
                             print(f"📤 [OUT] Link {connection_string}: {msg}")
-                            return orig_send(msg, *args, **kwargs)
-                        master.mav.send = wrapped_send
-                        master.mav._wrapped_send = True
+                        self.to_ws_queue.put(json.dumps({
+                            "type": "mavlink_log",
+                            "data": {
+                                "direction": "OUT",
+                                "timestamp": time.time() * 1000,
+                                "message": str(msg)
+                            }
+                        }))
+                        return orig_send(msg, *args, **kwargs)
+                    master.mav.send = wrapped_send
+                    master.mav._wrapped_send = True
                         
                 break
             except Exception as e:
@@ -311,6 +328,17 @@ class Gateway:
                 elif msg_type == 'GPS_RAW_INT':
                     gps_satellites = msg.satellites_visible
                     gps_fix_type = msg.fix_type
+                    
+                elif msg_type == 'SERIAL_CONTROL':
+                    count = msg.count
+                    data_bytes = bytes(msg.data[:count])
+                    text = data_bytes.decode('utf-8', errors='ignore')
+                    self.to_ws_queue.put(json.dumps({
+                        "type": "nsh_output",
+                        "data": {
+                            "text": text
+                        }
+                    }))
                     
             except Exception as e:
                 print(f"⚠️ Error reading MAVLink packet on {connection_string}: {e}")
@@ -721,6 +749,8 @@ class Gateway:
                 
                 if task_type == "upload_mission":
                     self._handle_upload_mission(task)
+                elif task_type == "nsh_command":
+                    self._handle_nsh_command(vehicle_id, task.get("command", ""))
                 elif not self.use_mock:
                     if task_type == "arm":
                         self._handle_arm_disarm(vehicle_id, task.get("armed", False))
@@ -1175,6 +1205,57 @@ class Gateway:
         )
         print(f"⚙️ MAVLink DO_CHANGE_SPEED command sent to Vehicle #{vehicle_id}: speed={speed} m/s")
 
+    def _handle_nsh_command(self, vehicle_id: int, cmd: str):
+        if self.use_mock:
+            # Simulate mock NSH shell responses
+            output = ""
+            if not cmd.strip():
+                output = "\nnsh> "
+            elif cmd.strip() == "help":
+                output = (
+                    "\nCommands:\n"
+                    "  help     - Show available commands\n"
+                    "  ver      - Show system version\n"
+                    "  status   - Show mock drone status\n"
+                    "  free     - Show free RAM\n"
+                    "\nnsh> "
+                )
+            elif cmd.strip() == "ver":
+                output = "\nPX4 Auto-Pilot Version: 1.14.0 (Mock SITL)\nBuild: v1.14.0-0-gabcdef\n\nnsh> "
+            elif cmd.strip() == "status":
+                output = f"\nSystem ID: {vehicle_id}\nArmed: True\nMode: MISSION\nBattery: 98%\nGPS Satellites: 18\n\nnsh> "
+            elif cmd.strip() == "free":
+                output = "\n             total       used       free    largest\nMem:       1048576     262144     786432     524288\n\nnsh> "
+            else:
+                output = f"\nnsh: {cmd.strip()}: command not found\n\nnsh> "
+            
+            self.to_ws_queue.put(json.dumps({
+                "type": "nsh_output",
+                "data": {
+                    "text": output
+                }
+            }))
+            return
+            
+        master = self.vehicle_masters.get(vehicle_id)
+        if not master:
+            return
+            
+        payload = (cmd + '\n').encode('utf-8')
+        for i in range(0, len(payload), 70):
+            chunk = payload[i:i+70]
+            data = bytearray(70)
+            data[:len(chunk)] = chunk
+            # flags = 3: EXCLUSIVE (1) | RESPOND (2)
+            master.mav.serial_control_send(
+                0, # device (0 = MAVLink shell)
+                3, # flags
+                0, # timeout
+                0, # baudrate
+                len(chunk), # count
+                data
+            )
+
     # --- STATIC HTTP SERVER & AUTO-SHUTDOWN UTILITIES ---
     def _run_http_server(self, directory: str, port: int):
         import http.server
@@ -1367,6 +1448,13 @@ class Gateway:
                             "type": "change_speed",
                             "vehicle_id": vehicle_id,
                             "speed": speed
+                        })
+                    elif action == "nsh_command":
+                        cmd = data.get("command", "")
+                        self.to_drone_queue.put({
+                            "type": "nsh_command",
+                            "vehicle_id": vehicle_id,
+                            "command": cmd
                         })
                     else:
                         print(f"❓ Unknown action: {action}")

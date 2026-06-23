@@ -23,6 +23,8 @@ import {
   ChevronUp,
   ChevronDown,
   Target,
+  MessageSquare,
+  Terminal,
 } from "lucide-react";
 import "./App.css";
 
@@ -103,6 +105,31 @@ function App() {
   const [tcpPort, setTcpPort] = useState(5760);
   const [serialPort, setSerialPort] = useState("/dev/ttyUSB0");
   const [serialBaud, setSerialBaud] = useState(57600);
+
+  // ── Mission 4 Debug Overlays ─────────────────────────────────
+  const [showMavlinkLog, setShowMavlinkLog] = useState(false);
+  const [mavlinkLogs, setMavlinkLogs] = useState<Array<{ direction: "IN" | "OUT"; timestamp: number; message: string }>>([]);
+  const [showNshTerminal, setShowNshTerminal] = useState(false);
+  const [nshLogs, setNshLogs] = useState("nsh> ");
+  const [nshInput, setNshInput] = useState("");
+
+  // Auto-scroll refs
+  const mavlinkLogsEndRef = useRef<HTMLDivElement | null>(null);
+  const nshLogsEndRef = useRef<HTMLPreElement | null>(null);
+
+  // Auto-scroll MAVLink logs to bottom
+  useEffect(() => {
+    if (mavlinkLogsEndRef.current) {
+      mavlinkLogsEndRef.current.scrollTop = mavlinkLogsEndRef.current.scrollHeight;
+    }
+  }, [mavlinkLogs, showMavlinkLog]);
+
+  // Auto-scroll NSH logs to bottom
+  useEffect(() => {
+    if (nshLogsEndRef.current) {
+      nshLogsEndRef.current.scrollTop = nshLogsEndRef.current.scrollHeight;
+    }
+  }, [nshLogs, showNshTerminal]);
 
   // ── Telemetry derived states ─────────────────────────────────
   const [climbRate, setClimbRate] = useState(0);
@@ -656,6 +683,14 @@ function App() {
             setGatewayLinks(payload.data || []);
           } else if (payload.type === "system_info") {
             setUseMock(payload.data.use_mock || false);
+          } else if (payload.type === "mavlink_log") {
+            setMavlinkLogs((prev) => {
+              const next = [...prev, payload.data];
+              if (next.length > 200) return next.slice(next.length - 200);
+              return next;
+            });
+          } else if (payload.type === "nsh_output") {
+            setNshLogs((prev) => prev + payload.data.text);
           }
         } catch (err) {
           console.warn("[WS] Error decoding message:", err);
@@ -756,6 +791,7 @@ function App() {
       orbit: { action: "orbit", data: { vehicle_id: vId, latitude: data.latitude, longitude: data.longitude, altitude: data.altitude || 10.0, radius: data.radius || 20.0 } },
       change_speed: { action: "change_speed", data: { vehicle_id: vId, speed: data.speed } },
       set_mode: { action: "set_mode", data: { vehicle_id: vId, mode: data.mode } },
+      nsh_command: { action: "nsh_command", data: { vehicle_id: vId, command: data.command } },
     };
     if (actionMap[type]) wsRef.current.send(JSON.stringify(actionMap[type]));
   };
@@ -1086,6 +1122,26 @@ function App() {
             >
               {isConnected ? "● LINK" : isSimulating ? "◎ SIM" : "○ OFFLINE"}
             </div>
+
+            {/* MAVLink Log viewer button */}
+            <button
+              className={`topbar-icon-btn ${showMavlinkLog ? "active" : ""}`}
+              onClick={() => setShowMavlinkLog((p) => !p)}
+              title="MAVLink Raw Messages Debug"
+            >
+              <MessageSquare style={{ width: 12, height: 12 }} />
+              MAVLink Logs
+            </button>
+
+            {/* NSH Terminal button */}
+            <button
+              className={`topbar-icon-btn ${showNshTerminal ? "active" : ""}`}
+              onClick={() => setShowNshTerminal((p) => !p)}
+              title="NSH Shell Terminal"
+            >
+              <Terminal style={{ width: 12, height: 12 }} />
+              NSH Shell
+            </button>
 
             {/* Connection settings button */}
             <button
@@ -1767,6 +1823,92 @@ function App() {
             >
               Cancel
             </button>
+          </div>
+        )}
+
+        {/* MAVLink Raw Logs Panel */}
+        {showMavlinkLog && (
+          <div className="debug-floating-overlay mavlink-logs-overlay">
+            <div className="dfo-header">
+              <div className="dfo-title">
+                <MessageSquare style={{ width: 14, height: 14, color: "var(--color-primary)" }} />
+                <span>MAVLink Raw Logs</span>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="btn btn-secondary py-1 px-2" style={{ fontSize: 9 }} onClick={() => setMavlinkLogs([])}>Clear</button>
+                <button className="dfo-close" onClick={() => setShowMavlinkLog(false)}>×</button>
+              </div>
+            </div>
+            <div className="dfo-body" ref={mavlinkLogsEndRef}>
+              {mavlinkLogs.length === 0 ? (
+                <div className="dfo-empty">No MAVLink messages received yet.</div>
+              ) : (
+                mavlinkLogs.map((log, idx) => {
+                  const date = new Date(log.timestamp);
+                  const timeStr = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}.${String(date.getMilliseconds()).padStart(3, '0')}`;
+                  const isIncoming = log.direction === "IN";
+                  return (
+                    <div key={idx} className="mavlink-log-row">
+                      <span className="log-time">{timeStr}</span>
+                      <span className={`log-dir ${isIncoming ? "in" : "out"}`}>
+                        {isIncoming ? "IN" : "OUT"}
+                      </span>
+                      <span className="log-msg">{log.message}</span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* NSH Terminal Panel */}
+        {showNshTerminal && (
+          <div className="debug-floating-overlay nsh-terminal-overlay">
+            <div className="dfo-header">
+              <div className="dfo-title">
+                <Terminal style={{ width: 14, height: 14, color: "var(--color-accent)" }} />
+                <span>NSH Shell Console</span>
+              </div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button className="btn btn-secondary py-1 px-2" style={{ fontSize: 9 }} onClick={() => setNshLogs("nsh> ")}>Clear</button>
+                <button className="dfo-close" onClick={() => setShowNshTerminal(false)}>×</button>
+              </div>
+            </div>
+            <div className="dfo-body" style={{ background: "#0c0f1d", padding: 0 }}>
+              <pre className="nsh-terminal-screen" ref={nshLogsEndRef}>{nshLogs}</pre>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (!nshInput.trim()) return;
+                  const cmd = nshInput.trim();
+                  
+                  // Optimistically append command to terminal screen
+                  setNshLogs((prev) => prev + cmd + "\n");
+                  
+                  // Send to drone
+                  executeSliderAction({
+                    type: "nsh_command",
+                    label: "NSH Command",
+                    data: { command: cmd }
+                  });
+                  
+                  setNshInput("");
+                }}
+                className="nsh-input-form"
+              >
+                <span className="nsh-prompt">nsh&gt;</span>
+                <input
+                  type="text"
+                  value={nshInput}
+                  onChange={(e) => setNshInput(e.target.value)}
+                  placeholder="Enter NSH command (e.g. help, ver, status)..."
+                  className="nsh-terminal-input"
+                  autoFocus
+                />
+                <button type="submit" className="nsh-send-btn">Send</button>
+              </form>
+            </div>
           </div>
         )}
 

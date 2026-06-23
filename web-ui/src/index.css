@@ -908,3 +908,177 @@ html, body {
 
 .rotate-45 { transform: rotate(45deg); }
 .rotate-90 { transform: rotate(90deg); }
+
+/* ═══════════════════════════════════════════════════════════════
+   DEBUG FLOATING OVERLAYS (MAVLink Logs & NSH Console)
+   ═══════════════════════════════════════════════════════════════ */
+.debug-floating-overlay {
+  position: absolute;
+  top: calc(var(--topbar-h) + 12px);
+  z-index: 500;
+  width: 480px;
+  max-height: calc(100vh - var(--topbar-h) - 40px);
+  background: rgba(8, 12, 24, 0.9);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.mavlink-logs-overlay {
+  right: 12px;
+}
+
+.nsh-terminal-overlay {
+  right: 504px; /* Render next to MAVLink logs panel if both are open */
+}
+
+.dfo-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.dfo-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-main);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.dfo-close {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  font-weight: 300;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 4px;
+  transition: color 0.15s ease;
+}
+.dfo-close:hover {
+  color: var(--color-danger);
+}
+
+.dfo-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.4;
+  max-height: 350px;
+}
+
+.dfo-empty {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 20px;
+  font-style: italic;
+  font-size: 9px;
+}
+
+.mavlink-log-row {
+  display: flex;
+  gap: 8px;
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+  word-break: break-all;
+}
+
+.log-time {
+  color: #6b7280;
+  flex-shrink: 0;
+}
+
+.log-dir {
+  font-weight: 700;
+  flex-shrink: 0;
+  padding: 0 3px;
+  border-radius: 2px;
+  font-size: 8px;
+}
+.log-dir.in {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.1);
+}
+.log-dir.out {
+  color: #0ea5e9;
+  background: rgba(14, 165, 233, 0.1);
+}
+
+.log-msg {
+  color: #e5e7eb;
+}
+
+/* NSH Console styles */
+.nsh-terminal-screen {
+  background: #090c15;
+  color: #10b981;
+  padding: 12px;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.4;
+  height: 280px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.nsh-input-form {
+  display: flex;
+  align-items: center;
+  background: #111827;
+  border-top: 1px solid var(--border-color);
+  padding: 6px 12px;
+  gap: 6px;
+}
+
+.nsh-prompt {
+  color: #3b82f6;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 10px;
+}
+
+.nsh-terminal-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #f3f4f6;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 4px 0;
+}
+
+.nsh-send-btn {
+  background: var(--color-primary);
+  color: #ffffff;
+  border: none;
+  outline: none;
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.nsh-send-btn:hover {
+  background: #0284c7;
+}
