@@ -169,7 +169,8 @@ class Gateway:
                                 "data": {
                                     "direction": "IN",
                                     "timestamp": time.time() * 1000,
-                                    "message": str(m)
+                                    "message": str(m),
+                                    "vehicle_id": m.get_srcSystem()
                                 }
                             }))
                         return m
@@ -182,12 +183,14 @@ class Gateway:
                     def wrapped_send(msg, *args, **kwargs):
                         if self.debug:
                             print(f"📤 [OUT] Link {connection_string}: {msg}")
+                        target_sys = getattr(msg, 'target_system', 0)
                         self.to_ws_queue.put(json.dumps({
                             "type": "mavlink_log",
                             "data": {
                                 "direction": "OUT",
                                 "timestamp": time.time() * 1000,
-                                "message": str(msg)
+                                "message": str(msg),
+                                "vehicle_id": target_sys
                             }
                         }))
                         return orig_send(msg, *args, **kwargs)
@@ -378,6 +381,17 @@ class Gateway:
                     }
                 self._queue_telemetry_broadcast(vehicle_id)
 
+    def _mock_log_outgoing_msg(self, vehicle_id: int, message: str):
+        self.to_ws_queue.put(json.dumps({
+            "type": "mavlink_log",
+            "data": {
+                "direction": "OUT",
+                "timestamp": time.time() * 1000,
+                "message": message,
+                "vehicle_id": vehicle_id
+            }
+        }))
+
     # --- MOCK SIMULATOR ---
     def _mock_telemetry_loop(self):
         """Generates realistic telemetry for 2 mock vehicles at 20Hz."""
@@ -401,6 +415,9 @@ class Gateway:
                                 state["flying"] = False
                                 state["alt"] = 0.0
                             print(f"[Mock #{vehicle_id}] Vehicle armed state set to: {state['armed']}")
+                            # Mock outgoing MAVLink log
+                            arm_val = 1.0 if state["armed"] else 0.0
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : 400, confirmation : 0, param1 : {arm_val}, param2 : 0.0, param3 : 0.0, param4 : 0.0, param5 : 0.0, param6 : 0.0, param7 : 0.0}}")
                         elif cmd_type == "set_mode":
                             new_mode = cmd.get("mode", "HOLD")
                             state["mode"] = new_mode
@@ -408,6 +425,10 @@ class Gateway:
                                 state["flying"] = True
                                 state["target_wp_idx"] = 0
                             print(f"[Mock #{vehicle_id}] Flight mode set to: {state['mode']}")
+                            # Mock outgoing MAVLink log
+                            mode_map = {"MISSION": 67371008, "HOLD": 50593792}
+                            cust_mode = mode_map.get(new_mode, 0)
+                            self._mock_log_outgoing_msg(vehicle_id, f"SET_MODE {{target_system : {vehicle_id}, base_mode : 81, custom_mode : {cust_mode}}}")
                         elif cmd_type == "upload_mission":
                             state["waypoints"] = cmd.get("waypoints", [])
                             print(f"[Mock #{vehicle_id}] Received {len(state['waypoints'])} waypoints.")
@@ -417,20 +438,30 @@ class Gateway:
                             state["mode"] = "TAKEOFF"
                             state["target_alt"] = cmd.get("altitude", 10.0)
                             print(f"[Mock #{vehicle_id}] Guided Takeoff requested. Target alt: {state['target_alt']}m")
+                            # Mock outgoing MAVLink log
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : 22, confirmation : 0, param1 : 0.0, param2 : 0.0, param3 : 0.0, param4 : nan, param5 : nan, param6 : nan, param7 : {state['target_alt']}}}")
                         elif cmd_type == "change_speed":
                             state["target_speed"] = cmd.get("speed", 10.0)
                             print(f"[Mock #{vehicle_id}] Target speed set to: {state['target_speed']} m/s")
+                            # Mock outgoing MAVLink log
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : 178, confirmation : 0, param1 : 1.0, param2 : {state['target_speed']}, param3 : -1.0, param4 : 0.0, param5 : 0.0, param6 : 0.0, param7 : 0.0}}")
                         elif cmd_type == "land":
                             state["mode"] = "LAND"
                             print(f"[Mock #{vehicle_id}] Guided Land requested.")
+                            # Mock outgoing MAVLink log
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : 21, confirmation : 0, param1 : 0.0, param2 : 0.0, param3 : 0.0, param4 : nan, param5 : nan, param6 : nan, param7 : 0.0}}")
                         elif cmd_type == "rtl":
                             state["mode"] = "RTL"
                             state["flying"] = True
                             print(f"[Mock #{vehicle_id}] Guided RTL requested.")
+                            # Mock outgoing MAVLink log
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : 20, confirmation : 0, param1 : 0.0, param2 : 0.0, param3 : 0.0, param4 : nan, param5 : nan, param6 : nan, param7 : 0.0}}")
                         elif cmd_type == "pause":
                             state["mode"] = "HOLD"
                             state["flying"] = False
                             print(f"[Mock #{vehicle_id}] Guided Pause requested.")
+                            # Mock outgoing MAVLink log
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : 192, confirmation : 0, param1 : 0.0, param2 : 0.0, param3 : 0.0, param4 : nan, param5 : nan, param6 : nan, param7 : 0.0}}")
                         elif cmd_type == "go_to":
                             state["mode"] = "GO_TO"
                             state["flying"] = True
@@ -438,6 +469,8 @@ class Gateway:
                             state["target_lon"] = cmd.get("longitude")
                             state["target_alt"] = cmd.get("altitude", state["alt"])
                             print(f"[Mock #{vehicle_id}] Guided Go To requested. Lat/Lon: {state['target_lat']},{state['target_lon']}")
+                            # Mock outgoing MAVLink log
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_INT {{target_system : {vehicle_id}, target_component : 1, frame : 6, command : 192, current : 2, autocontinue : 0, x : {int(state['target_lat']*1e7)}, y : {int(state['target_lon']*1e7)}, z : {state['target_alt']}}}")
                         elif cmd_type == "orbit":
                             state["mode"] = "ORBIT"
                             state["flying"] = True
@@ -447,6 +480,8 @@ class Gateway:
                             state["orbit_radius"] = cmd.get("radius", 20.0)
                             state["orbit_angle"] = 0.0
                             print(f"[Mock #{vehicle_id}] Guided Orbit requested. Center Lat/Lon: {state['target_lat']},{state['target_lon']}, Radius: {state['orbit_radius']}m")
+                            # Mock outgoing MAVLink log
+                            self._mock_log_outgoing_msg(vehicle_id, f"COMMAND_INT {{target_system : {vehicle_id}, target_component : 1, frame : 6, command : 34, current : 2, autocontinue : 0, param1 : {state['orbit_radius']}, param2 : nan, param3 : 0.0, param4 : nan, x : {int(state['target_lat']*1e7)}, y : {int(state['target_lon']*1e7)}, z : {state['target_alt']}}}")
             except queue.Empty:
                 pass
                 
@@ -732,12 +767,46 @@ class Gateway:
 
     def _queue_telemetry_broadcast(self, vehicle_id: int):
         with self.telemetry_lock:
+            telem = self.telemetries[vehicle_id]
             telem_data = json.dumps({
                 "type": "telemetry",
                 "vehicle_id": vehicle_id,
-                "data": self.telemetries[vehicle_id]
+                "data": telem
             })
         self.to_ws_queue.put(telem_data)
+        
+        # In mock mode, we also generate mock MAVLink logs for telemetry to populate GCS debug panels
+        if self.use_mock:
+            hb_msg = f"HEARTBEAT {{type : 2, autopilot : 12, base_mode : 81, custom_mode : {67371008 if telem['status']['mode'] == 'MISSION' else 0}, system_status : 4, mavlink_version : 3}}"
+            self.to_ws_queue.put(json.dumps({
+                "type": "mavlink_log",
+                "data": {
+                    "direction": "IN",
+                    "timestamp": time.time() * 1000,
+                    "message": hb_msg,
+                    "vehicle_id": vehicle_id
+                }
+            }))
+            gp_msg = f"GLOBAL_POSITION_INT {{time_boot_ms : 12345, lat : {int(telem['navigation']['latitude'] * 1e7)}, lon : {int(telem['navigation']['longitude'] * 1e7)}, alt : {int(telem['navigation']['msl_altitude'] * 1000)}, relative_alt : {int(telem['navigation']['relative_altitude'] * 1000)}, vx : 0, vy : 0, vz : 0, hdg : {telem['pose']['heading']}}}"
+            self.to_ws_queue.put(json.dumps({
+                "type": "mavlink_log",
+                "data": {
+                    "direction": "IN",
+                    "timestamp": time.time() * 1000,
+                    "message": gp_msg,
+                    "vehicle_id": vehicle_id
+                }
+            }))
+            sys_msg = f"SYS_STATUS {{onboard_control_sensors_present : 1, onboard_control_sensors_enabled : 1, onboard_control_sensors_health : 1, load : 100, voltage_battery : {int(telem['status']['battery_voltage'] * 1000)}, current_battery : -1, battery_remaining : {telem['status']['battery_percent']}, drop_rate_comm : 0, errors_comm : 0, errors_count1 : 0, errors_count2 : 0, errors_count3 : 0, errors_count4 : 0}}"
+            self.to_ws_queue.put(json.dumps({
+                "type": "mavlink_log",
+                "data": {
+                    "direction": "IN",
+                    "timestamp": time.time() * 1000,
+                    "message": sys_msg,
+                    "vehicle_id": vehicle_id
+                }
+            }))
 
     # --- DYNAMIC COMMAND / MISSION ROUTER ---
     def _mission_worker_loop(self):
