@@ -108,14 +108,15 @@ function App() {
 
   // ── Mission 4 Debug Overlays ─────────────────────────────────
   const [showMavlinkLog, setShowMavlinkLog] = useState(false);
-  const [mavlinkLogs, setMavlinkLogs] = useState<Array<{ direction: "IN" | "OUT"; timestamp: number; message: string }>>([]);
+  const [mavlinkLogs, setMavlinkLogs] = useState<Array<{ direction: "IN" | "OUT"; timestamp: number; message: string; vehicle_id: number }>>([]);
   const [showNshTerminal, setShowNshTerminal] = useState(false);
   const [nshLogs, setNshLogs] = useState("nsh> ");
   const [nshInput, setNshInput] = useState("");
 
   // ── Mission 5: Tabbed MAVLink Logs, Dragging, Resizing ───────
-  const [mavlinkActiveTab, setMavlinkActiveTab] = useState<"raw" | "inspector" | "sent">("raw");
-  const [sentMavlinkLogs, setSentMavlinkLogs] = useState<Array<{ direction: "OUT"; timestamp: number; message: string }>>([]);
+  // 4 tabs: raw(IN only) | inspector(IN stats) | sent(OUT list) | sent_stats(OUT grouped)
+  const [mavlinkActiveTab, setMavlinkActiveTab] = useState<"raw" | "inspector" | "sent" | "sent_stats">("raw");
+  const [sentMavlinkLogs, setSentMavlinkLogs] = useState<Array<{ direction: "OUT"; timestamp: number; message: string; vehicle_id: number }>>([]);
   
   interface MsgStats {
     count: number;
@@ -124,8 +125,12 @@ function App() {
     timestamps: number[];
     fields: Record<string, string>;
   }
-  const [inspectorData, setInspectorData] = useState<Record<string, MsgStats>>({});
+  // inspectorData: keyed by vehicle_id → message_type (IN messages, per-vehicle)
+  const [inspectorData, setInspectorData] = useState<Record<number, Record<string, MsgStats>>>({});
+  // sentInspectorData: same structure for OUT (sent) messages
+  const [sentInspectorData, setSentInspectorData] = useState<Record<number, Record<string, MsgStats>>>({});
   const [expandedMsgs, setExpandedMsgs] = useState<Record<string, boolean>>({});
+  const [expandedSentMsgs, setExpandedSentMsgs] = useState<Record<string, boolean>>({});
 
   const parseMavlinkMessage = (msgStr: string) => {
     const match = msgStr.match(/^([A-Z0-9_]+)\s*\{(.*)\}$/);
@@ -796,24 +801,57 @@ function App() {
             setUseMock(payload.data.use_mock || false);
           } else if (payload.type === "mavlink_log") {
             const logData = payload.data;
+            const logVehicleId: number = logData.vehicle_id ?? 0;
+            // Enrich log entry with vehicle_id for per-vehicle filtering
+            const enrichedLog = { ...logData, vehicle_id: logVehicleId };
             setMavlinkLogs((prev) => {
-              const next = [...prev, logData];
+              const next = [...prev, enrichedLog];
               if (next.length > 200) return next.slice(next.length - 200);
               return next;
             });
             
             if (logData.direction === "OUT") {
+              // Tab 3: Add to chronological sent log list
               setSentMavlinkLogs((prev) => {
-                const next = [...prev, logData];
-                if (next.length > 100) return next.slice(next.length - 100);
+                const next = [...prev, enrichedLog];
+                if (next.length > 200) return next.slice(next.length - 200);
                 return next;
+              });
+              // Tab 4: Update grouped sent stats (same sliding-window approach as IN inspector)
+              const sentParsed = parseMavlinkMessage(logData.message);
+              const sentType = sentParsed.type;
+              const nowSent = logData.timestamp;
+              setSentInspectorData((prev) => {
+                const vehicleStats = prev[logVehicleId] || {};
+                const existing = vehicleStats[sentType] || { count: 0, lastTime: 0, rate: 0, timestamps: [], fields: {} };
+                const nextTimestamps = [...existing.timestamps, nowSent].slice(-5);
+                let rate = 0;
+                if (nextTimestamps.length > 1) {
+                  const elapsed = (nextTimestamps[nextTimestamps.length - 1] - nextTimestamps[0]) / 1000;
+                  if (elapsed > 0) rate = (nextTimestamps.length - 1) / elapsed;
+                }
+                return {
+                  ...prev,
+                  [logVehicleId]: {
+                    ...vehicleStats,
+                    [sentType]: {
+                      count: existing.count + 1,
+                      lastTime: nowSent,
+                      rate: parseFloat(rate.toFixed(1)),
+                      timestamps: nextTimestamps,
+                      fields: sentParsed.fields
+                    }
+                  }
+                };
               });
             } else if (logData.direction === "IN") {
               const now = logData.timestamp;
               const parsed = parseMavlinkMessage(logData.message);
               const type = parsed.type;
+              // Store inspector stats under vehicle_id → message_type for isolation
               setInspectorData((prev) => {
-                const existing = prev[type] || { count: 0, lastTime: 0, rate: 0, timestamps: [], fields: {} };
+                const vehicleStats = prev[logVehicleId] || {};
+                const existing = vehicleStats[type] || { count: 0, lastTime: 0, rate: 0, timestamps: [], fields: {} };
                 const nextTimestamps = [...existing.timestamps, now].slice(-5);
                 let rate = 0;
                 if (nextTimestamps.length > 1) {
@@ -824,12 +862,15 @@ function App() {
                 }
                 return {
                   ...prev,
-                  [type]: {
-                    count: existing.count + 1,
-                    lastTime: now,
-                    rate: parseFloat(rate.toFixed(1)),
-                    timestamps: nextTimestamps,
-                    fields: parsed.fields
+                  [logVehicleId]: {
+                    ...vehicleStats,
+                    [type]: {
+                      count: existing.count + 1,
+                      lastTime: now,
+                      rate: parseFloat(rate.toFixed(1)),
+                      timestamps: nextTimestamps,
+                      fields: parsed.fields
+                    }
                   }
                 };
               });
@@ -1985,107 +2026,133 @@ function App() {
             <div className="dfo-header" onMouseDown={handleMavlinkMouseDown} style={{ cursor: "move" }}>
               <div className="dfo-title">
                 <MessageSquare style={{ width: 14, height: 14, color: "var(--color-primary)" }} />
-                <span>MAVLink Raw Logs</span>
+                <span>MAVLink Monitor{activeVehicleId !== null ? ` — #${activeVehicleId}` : ""}</span>
               </div>
               <div style={{ display: "flex", gap: 6 }}>
                 <button className="btn btn-secondary py-1 px-2" style={{ fontSize: 9 }} onClick={() => {
                   if (mavlinkActiveTab === "raw") setMavlinkLogs([]);
-                  else if (mavlinkActiveTab === "inspector") setInspectorData({});
+                  else if (mavlinkActiveTab === "inspector") {
+                    if (activeVehicleId !== null) {
+                      setInspectorData(prev => { const next = { ...prev }; delete next[activeVehicleId]; return next; });
+                    } else setInspectorData({});
+                  }
                   else if (mavlinkActiveTab === "sent") setSentMavlinkLogs([]);
+                  else if (mavlinkActiveTab === "sent_stats") {
+                    if (activeVehicleId !== null) {
+                      setSentInspectorData(prev => { const next = { ...prev }; delete next[activeVehicleId]; return next; });
+                    } else setSentInspectorData({});
+                    setSentMavlinkLogs([]);
+                  }
                 }}>Clear</button>
                 <button className="dfo-close" onClick={() => setShowMavlinkLog(false)}>×</button>
               </div>
             </div>
 
-            {/* Tabs for MAVLink raw logs overlay */}
+            {/* 4-tab MAVLink Monitor: Raw IN | Inspector | Sent | Sent Stats */}
             <div className="dfo-tabs">
-              <button 
+              <button
                 className={`dfo-tab ${mavlinkActiveTab === "raw" ? "active" : ""}`}
                 onClick={() => setMavlinkActiveTab("raw")}
               >
-                Raw Logs
+                Raw IN
               </button>
-              <button 
+              <button
                 className={`dfo-tab ${mavlinkActiveTab === "inspector" ? "active" : ""}`}
                 onClick={() => setMavlinkActiveTab("inspector")}
               >
                 Inspector
               </button>
-              <button 
+              <button
                 className={`dfo-tab ${mavlinkActiveTab === "sent" ? "active" : ""}`}
                 onClick={() => setMavlinkActiveTab("sent")}
               >
-                Sent Logs
+                Sent
+              </button>
+              <button
+                className={`dfo-tab ${mavlinkActiveTab === "sent_stats" ? "active" : ""}`}
+                onClick={() => setMavlinkActiveTab("sent_stats")}
+              >
+                Sent Stats
               </button>
             </div>
 
+            {/* Tab 1: Raw IN — incoming-only chronological log */}
             {mavlinkActiveTab === "raw" && (
               <div className="dfo-body" ref={mavlinkLogsEndRef}>
-                {mavlinkLogs.length === 0 ? (
-                  <div className="dfo-empty">No MAVLink messages received yet.</div>
-                ) : (
-                  mavlinkLogs.map((log, idx) => {
-                    const date = new Date(log.timestamp);
-                    const timeStr = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}.${String(date.getMilliseconds()).padStart(3, "0")}`;
-                    const isIncoming = log.direction === "IN";
-                    return (
-                      <div key={idx} className="mavlink-log-row">
-                        <span className="log-time">{timeStr}</span>
-                        <span className={`log-dir ${isIncoming ? "in" : "out"}`}>
-                          {isIncoming ? "IN" : "OUT"}
-                        </span>
-                        <span className="log-msg">{log.message}</span>
-                      </div>
-                    );
-                  })
-                )}
+                {(() => {
+                  const filtered = mavlinkLogs.filter(l =>
+                    l.direction === "IN" && (activeVehicleId === null || l.vehicle_id === activeVehicleId)
+                  );
+                  return filtered.length === 0 ? (
+                    <div className="dfo-empty">No incoming MAVLink messages yet.</div>
+                  ) : (
+                    filtered.map((log, idx) => {
+                      const date = new Date(log.timestamp);
+                      const timeStr = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}.${String(date.getMilliseconds()).padStart(3, "0")}`;
+                      return (
+                        <div key={idx} className="mavlink-log-row">
+                          <span className="log-time">{timeStr}</span>
+                          <span className="log-dir in">IN</span>
+                          <span className="log-msg">{log.message}</span>
+                        </div>
+                      );
+                    })
+                  );
+                })()}
               </div>
             )}
 
             {mavlinkActiveTab === "inspector" && (
               <div className="dfo-body">
-                {Object.keys(inspectorData).length === 0 ? (
-                  <div className="dfo-empty">No telemetry stats yet.</div>
-                ) : (
-                  <div className="inspector-list">
-                    {Object.entries(inspectorData).sort(([a], [b]) => a.localeCompare(b)).map(([msgType, stats]) => {
-                      const isExpanded = !!expandedMsgs[msgType];
-                      return (
-                        <div key={msgType} className="inspector-item">
-                          <div 
-                            className="inspector-item-header"
-                            onClick={() => setExpandedMsgs(prev => ({ ...prev, [msgType]: !isExpanded }))}
-                          >
-                            <span className="inspector-item-title">
-                              {isExpanded ? "▼" : "▶"} {msgType}
-                            </span>
-                            <div className="inspector-item-meta">
-                              <span>{stats.count} msgs</span>
-                              <span>{stats.rate} Hz</span>
+                {(() => {
+                  // Retrieve inspector stats for the active vehicle only
+                  const vehicleStats = activeVehicleId !== null
+                    ? (inspectorData[activeVehicleId] || {})
+                    : Object.values(inspectorData).reduce((acc, v) => ({ ...acc, ...v }), {} as Record<string, MsgStats>);
+                  return Object.keys(vehicleStats).length === 0 ? (
+                    <div className="dfo-empty">No telemetry stats yet{activeVehicleId !== null ? ` for Vehicle #${activeVehicleId}` : ""}.</div>
+                  ) : (
+                    <div className="inspector-list">
+                      {Object.entries(vehicleStats).sort(([a], [b]) => a.localeCompare(b)).map(([msgType, stats]) => {
+                        const isExpanded = !!expandedMsgs[msgType];
+                        return (
+                          <div key={msgType} className="inspector-item">
+                            <div 
+                              className="inspector-item-header"
+                              onClick={() => setExpandedMsgs(prev => ({ ...prev, [msgType]: !isExpanded }))}
+                            >
+                              <span className="inspector-item-title">
+                                {isExpanded ? "▼" : "▶"} {msgType}
+                              </span>
+                              <div className="inspector-item-meta">
+                                <span>{stats.count} msgs</span>
+                                <span>{stats.rate} Hz</span>
+                              </div>
                             </div>
+                            {isExpanded && (
+                              <div className="inspector-item-fields">
+                                <table className="inspector-table">
+                                  <tbody>
+                                    {Object.entries(stats.fields).map(([fieldName, val]) => (
+                                      <tr key={fieldName}>
+                                        <td className="field-name">{fieldName}</td>
+                                        <td className="field-value">{val}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
                           </div>
-                          {isExpanded && (
-                            <div className="inspector-item-fields">
-                              <table className="inspector-table">
-                                <tbody>
-                                  {Object.entries(stats.fields).map(([fieldName, val]) => (
-                                    <tr key={fieldName}>
-                                      <td className="field-name">{fieldName}</td>
-                                      <td className="field-value">{val}</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
               </div>
             )}
 
+            {/* Tab 3: Sent — chronological list of ALL outgoing MAVLink commands (no vehicle filter) */}
             {mavlinkActiveTab === "sent" && (
               <div className="dfo-body">
                 {sentMavlinkLogs.length === 0 ? (
@@ -2097,16 +2164,75 @@ function App() {
                     return (
                       <div key={idx} className="mavlink-log-row">
                         <span className="log-time">{timeStr}</span>
-                        <span className="log-dir out" style={{ color: "#38bdf8", background: "rgba(56, 189, 248, 0.1)" }}>
-                          SENT
+                        <span className="log-dir out" style={{ color: "#38bdf8", background: "rgba(56,189,248,0.12)", minWidth: 36, textAlign: "center" }}>
+                          OUT
                         </span>
-                        <span className="log-msg" style={{ color: "#e5e7eb" }}>{log.message}</span>
+                        <span style={{ color: "#64748b", fontSize: 10, padding: "0 4px", minWidth: 20 }}>#{log.vehicle_id}</span>
+                        <span className="log-msg" style={{ color: "#e2e8f0" }}>{log.message}</span>
                       </div>
                     );
                   })
                 )}
               </div>
             )}
+
+            {/* Tab 4: Sent Stats — grouped/categorized (ALL vehicles, no vehicle filter) */}
+            {mavlinkActiveTab === "sent_stats" && (
+              <div className="dfo-body">
+                {(() => {
+                  // Merge all vehicles' sent stats — OUT msgs are GCS-originated, no per-vehicle filter needed
+                  const allStats = Object.values(sentInspectorData).reduce(
+                    (acc, v) => {
+                      for (const [type, s] of Object.entries(v)) {
+                        if (!acc[type]) acc[type] = { ...s };
+                        else acc[type] = { ...acc[type], count: acc[type].count + s.count, fields: s.fields, lastTime: Math.max(acc[type].lastTime, s.lastTime) };
+                      }
+                      return acc;
+                    },
+                    {} as Record<string, MsgStats>
+                  );
+                  return Object.keys(allStats).length === 0 ? (
+                    <div className="dfo-empty">No sent command stats yet.</div>
+                  ) : (
+                    <div className="inspector-list">
+                      {Object.entries(allStats).sort(([a], [b]) => a.localeCompare(b)).map(([msgType, stats]) => {
+                        const isExpanded = !!expandedSentMsgs[msgType];
+                        return (
+                          <div key={msgType} className="inspector-item">
+                            <div
+                              className="inspector-item-header"
+                              onClick={() => setExpandedSentMsgs(prev => ({ ...prev, [msgType]: !isExpanded }))}
+                            >
+                              <span className="inspector-item-title">
+                                {isExpanded ? "▼" : "▶"} {msgType}
+                              </span>
+                              <div className="inspector-item-meta">
+                                <span style={{ color: "#38bdf8" }}>{stats.count}×</span>
+                              </div>
+                            </div>
+                            {isExpanded && (
+                              <div className="inspector-item-fields">
+                                <table className="inspector-table">
+                                  <tbody>
+                                    {Object.entries(stats.fields).map(([fieldName, val]) => (
+                                      <tr key={fieldName}>
+                                        <td className="field-name">{fieldName}</td>
+                                        <td className="field-value" style={{ color: "#38bdf8" }}>{val}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
           </div>
         )}
 
