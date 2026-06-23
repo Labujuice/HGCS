@@ -18,10 +18,11 @@ except ImportError:
     MAVLINK_AVAILABLE = False
 
 class Gateway:
-    def __init__(self, ws_host: str, ws_port: int, use_mock: bool):
+    def __init__(self, ws_host: str, ws_port: int, use_mock: bool, debug: bool = False):
         self.ws_host = ws_host
         self.ws_port = ws_port
         self.use_mock = use_mock or not MAVLINK_AVAILABLE
+        self.debug = debug
         
         # UI & Auto-shutdown settings
         self.serve_ui = False
@@ -154,6 +155,28 @@ class Gateway:
                 master = mavutil.mavlink_connection(connection_string)
                 self.active_links[connection_string] = master
                 print(f"✅ MAVLink Link established: {connection_string}")
+                
+                if self.debug:
+                    # Wrap recv_match to print incoming messages
+                    if not hasattr(master, '_wrapped_recv_match'):
+                        orig_recv_match = master.recv_match
+                        def wrapped_recv_match(*args, **kwargs):
+                            m = orig_recv_match(*args, **kwargs)
+                            if m is not None:
+                                print(f"📥 [IN] Link {connection_string}: {m}")
+                            return m
+                        master.recv_match = wrapped_recv_match
+                        master._wrapped_recv_match = True
+                    
+                    # Wrap send to print outgoing messages
+                    if not hasattr(master.mav, '_wrapped_send'):
+                        orig_send = master.mav.send
+                        def wrapped_send(msg, *args, **kwargs):
+                            print(f"📤 [OUT] Link {connection_string}: {msg}")
+                            return orig_send(msg, *args, **kwargs)
+                        master.mav.send = wrapped_send
+                        master.mav._wrapped_send = True
+                        
                 break
             except Exception as e:
                 print(f"❌ Connection error on {connection_string}: {e}. Retrying in 4s...")
@@ -948,11 +971,24 @@ class Gateway:
         is_px4 = self.vehicle_autopilots.get(vehicle_id, 12) == 12 # 12 is MAV_AUTOPILOT_PX4
         
         if is_px4:
+            PX4_CUSTOM_MAIN_MODE_MANUAL = 1
+            PX4_CUSTOM_MAIN_MODE_ALTCTL = 2
+            PX4_CUSTOM_MAIN_MODE_POSCTL = 3
             PX4_CUSTOM_MAIN_MODE_AUTO = 4
+            PX4_CUSTOM_MAIN_MODE_OFFBOARD = 6
+            PX4_CUSTOM_MAIN_MODE_STABILIZED = 7
+            
             mode_mapping = {
-                "HOLD": (PX4_CUSTOM_MAIN_MODE_AUTO, 3),
-                "MISSION": (PX4_CUSTOM_MAIN_MODE_AUTO, 4),
-                "RTL": (PX4_CUSTOM_MAIN_MODE_AUTO, 5),
+                "MANUAL": (PX4_CUSTOM_MAIN_MODE_MANUAL, 0),
+                "STABILIZED": (PX4_CUSTOM_MAIN_MODE_STABILIZED, 0),
+                "ALTCTL": (PX4_CUSTOM_MAIN_MODE_ALTCTL, 0),
+                "POSCTL": (PX4_CUSTOM_MAIN_MODE_POSCTL, 0),
+                "HOLD": (PX4_CUSTOM_MAIN_MODE_AUTO, 3),        # Loiter
+                "MISSION": (PX4_CUSTOM_MAIN_MODE_AUTO, 4),     # Mission
+                "RTL": (PX4_CUSTOM_MAIN_MODE_AUTO, 5),         # RTL
+                "LAND": (PX4_CUSTOM_MAIN_MODE_AUTO, 6),        # Land
+                "TAKEOFF": (PX4_CUSTOM_MAIN_MODE_AUTO, 2),     # Takeoff
+                "OFFBOARD": (PX4_CUSTOM_MAIN_MODE_OFFBOARD, 0),
             }
             if mode in mode_mapping:
                 main_mode, sub_mode = mode_mapping[mode]
@@ -965,12 +1001,18 @@ class Gateway:
                 print(f"⚙️ MAVLink mode set for Vehicle #{vehicle_id}: PX4 {mode} (main {main_mode}, sub {sub_mode})")
         else:
             # ArduPilot Copter custom modes
-            # AUTO = 3, LOITER = 5, RTL = 6, LAND = 9
+            # STABILIZE = 0, ALT_HOLD = 2, AUTO = 3, GUIDED = 4, LOITER = 5, RTL = 6, LAND = 9, POSHOLD = 16
             mode_mapping = {
-                "HOLD": 5,     # LOITER
-                "MISSION": 3,  # AUTO
-                "RTL": 6,      # RTL
-                "LAND": 9      # LAND
+                "MANUAL": 0,       # STABILIZE
+                "STABILIZED": 0,   # STABILIZE
+                "ALTCTL": 2,       # ALT_HOLD
+                "POSCTL": 16,      # POSHOLD
+                "HOLD": 5,         # LOITER
+                "MISSION": 3,      # AUTO / MISSION
+                "RTL": 6,          # RTL
+                "LAND": 9,         # LAND
+                "TAKEOFF": 3,      # AUTO
+                "OFFBOARD": 4,     # GUIDED
             }
             if mode in mode_mapping:
                 custom_mode = mode_mapping[mode]
@@ -1346,6 +1388,7 @@ if __name__ == "__main__":
     parser.add_argument("--host", type=str, default="127.0.0.1", help="WebSocket host")
     parser.add_argument("--port", type=int, default=8080, help="WebSocket port")
     parser.add_argument("--mock", action="store_true", help="Force multi-drone mock telemetry")
+    parser.add_argument("--debug", action="store_true", help="Print all input/output MAVLink messages in a human-readable format")
     
     # Static serving arguments
     parser.add_argument("--no-serve", dest="serve", action="store_false", help="Do not serve web UI static files")
@@ -1366,7 +1409,8 @@ if __name__ == "__main__":
     gateway = Gateway(
         ws_host=args.host,
         ws_port=args.port,
-        use_mock=args.mock
+        use_mock=args.mock,
+        debug=args.debug
     )
     
     gateway.serve_ui = args.serve

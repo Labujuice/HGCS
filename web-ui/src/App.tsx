@@ -974,7 +974,38 @@ function App() {
               }`}
             >
               {telemetry.status.armed ? "▶ ARMED" : "■ DISARMED"}{" "}
-              — {telemetry.status.mode}
+              —{" "}
+              <select
+                value={telemetry.status.mode}
+                onChange={(e) =>
+                  executeSliderAction({
+                    type: "set_mode",
+                    label: "Change Mode",
+                    data: { mode: e.target.value },
+                  })
+                }
+                className="mode-select"
+              >
+                {Array.from(
+                  new Set([
+                    "MANUAL",
+                    "STABILIZED",
+                    "ALTCTL",
+                    "POSCTL",
+                    "HOLD",
+                    "MISSION",
+                    "RTL",
+                    "LAND",
+                    "TAKEOFF",
+                    "OFFBOARD",
+                    telemetry.status.mode
+                  ].filter(Boolean))
+                ).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
               {telemetry.status.autopilot && (
                 <span className="autopilot-badge">{telemetry.status.autopilot}</span>
               )}

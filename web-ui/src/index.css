@@ -160,6 +160,25 @@ html, body {
   font-family: var(--font-mono);
 }
 
+.mode-select {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  cursor: pointer;
+  outline: none;
+  padding: 0 4px;
+  text-transform: uppercase;
+}
+.mode-select option {
+  background: #111827;
+  color: #f3f4f6;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
 /* Topbar telemetry pills */
 .topbar-tele-strip {
   display: flex;

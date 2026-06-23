@@ -542,16 +542,16 @@ export const FlightMap: React.FC<MapProps> = ({
       {/* Leaflet target div */}
       <div ref={mapContainerRef} className="w-full h-full z-0" />
 
-      {/* Map floating controls (left, below fly-tools panel) */}
+      {/* Map floating controls (left column 2, side-by-side with fly-tools panel) */}
       <div
         style={{
           position: "absolute",
-          top: "calc(var(--topbar-h, 40px) + 12px + 56px * 5 + 6px * 4 + 20px)",
-          left: 12,
+          top: "calc(var(--topbar-h, 40px) + 12px)",
+          left: 80,
           zIndex: 400,
           display: "flex",
           flexDirection: "column",
-          gap: 5,
+          gap: 6,
           width: 56,
         }}
       >
