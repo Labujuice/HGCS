@@ -806,7 +806,26 @@ class Gateway:
                 if cmd_str == "TAKEOFF":
                     cmd = mavutil.mavlink.MAV_CMD_NAV_TAKEOFF
                 elif cmd_str == "RTL":
-                    cmd = mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH
+                    if is_px4:
+                        # PX4 internal mission navigator does not support RTL inside mission sequence.
+                        # Map RTL to LAND (21) at home/takeoff coordinates.
+                        cmd = mavutil.mavlink.MAV_CMD_NAV_LAND
+                        home_lat = 0.0
+                        home_lon = 0.0
+                        if vehicle_id in self.telemetries:
+                            nav = self.telemetries[vehicle_id].get("navigation", {})
+                            home_lat = nav.get("latitude", 0.0)
+                            home_lon = nav.get("longitude", 0.0)
+                        
+                        if home_lat == 0.0 or home_lon == 0.0:
+                            home_lat = waypoints[0].get("latitude", 0.0)
+                            home_lon = waypoints[0].get("longitude", 0.0)
+                        
+                        lat = home_lat
+                        lon = home_lon
+                        alt = 0.0
+                    else:
+                        cmd = mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH
                 elif cmd_str == "LAND":
                     cmd = mavutil.mavlink.MAV_CMD_NAV_LAND
                 elif cmd_str == "LOITER":
