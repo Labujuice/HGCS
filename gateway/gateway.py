@@ -213,6 +213,7 @@ class Gateway:
                 time.sleep(4)
                 
         last_telem_send = 0
+        last_heartbeat_send = 0
         gps_satellites = 0
         gps_fix_type = 0
         battery_voltage = 0.0
@@ -233,6 +234,29 @@ class Gateway:
         
         while self.running:
             try:
+                now_time = time.time()
+                # Actively send Heartbeat to the link every 1.0 second to establish connection
+                if now_time - last_heartbeat_send >= 1.0:
+                    last_heartbeat_send = now_time
+                    try:
+                        # Send heartbeat as GCS (system ID 255 is set by master.mav.srcSystem default or we force it)
+                        # type: MAV_TYPE_GCS (6)
+                        # autopilot: MAV_AUTOPILOT_INVALID (8)
+                        master.mav.heartbeat_send(
+                            6, # type: MAV_TYPE_GCS
+                            8, # autopilot: MAV_AUTOPILOT_INVALID
+                            0, # base_mode
+                            0, # custom_mode
+                            0  # system_status
+                        )
+                        # Record heartbeat in outgoing MAVLink log
+                        self._log_outgoing_mavlink_msg(
+                            vehicle_id if vehicle_id is not None else 1,
+                            "HEARTBEAT {type : 6, autopilot : 8, base_mode : 0, custom_mode : 0, system_status : 0}"
+                        )
+                    except Exception as hb_err:
+                        pass
+
                 # Read incoming MAVLink packets
                 msg = master.recv_match(blocking=True, timeout=0.05)
                 if msg is None:
@@ -393,6 +417,17 @@ class Gateway:
 
     def _mock_log_outgoing_msg(self, vehicle_id: int, message: str):
         print(f"[MockOUT] vid={vehicle_id} msg={message[:60]}")
+        self.to_ws_queue.put(json.dumps({
+            "type": "mavlink_log",
+            "data": {
+                "direction": "OUT",
+                "timestamp": time.time() * 1000,
+                "message": message,
+                "vehicle_id": vehicle_id
+            }
+        }))
+
+    def _log_outgoing_mavlink_msg(self, vehicle_id: int, message: str):
         self.to_ws_queue.put(json.dumps({
             "type": "mavlink_log",
             "data": {
@@ -1075,6 +1110,10 @@ class Gateway:
             vehicle_id, 1, cmd, 0,
             1.0 if arm else 0.0, 0, 0, 0, 0, 0, 0
         )
+        self._log_outgoing_mavlink_msg(
+            vehicle_id,
+            f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : 400, confirmation : 0, param1 : {1.0 if arm else 0.0}, param2 : 0, param3 : 0, param4 : 0, param5 : 0, param6 : 0, param7 : 0}}"
+        )
         print(f"⚙️ MAVLink arm command sent to Vehicle #{vehicle_id}: {arm}")
 
     def _handle_change_mode(self, vehicle_id: int, mode: str):
@@ -1112,6 +1151,10 @@ class Gateway:
                     mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
                     custom_mode
                 )
+                self._log_outgoing_mavlink_msg(
+                    vehicle_id,
+                    f"SET_MODE {{target_system : {vehicle_id}, base_mode : {mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED}, custom_mode : {custom_mode}}}"
+                )
                 print(f"⚙️ MAVLink mode set for Vehicle #{vehicle_id}: PX4 {mode} (main {main_mode}, sub {sub_mode})")
         else:
             # ArduPilot Copter custom modes
@@ -1134,6 +1177,10 @@ class Gateway:
                     vehicle_id,
                     mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
                     custom_mode
+                )
+                self._log_outgoing_mavlink_msg(
+                    vehicle_id,
+                    f"SET_MODE {{target_system : {vehicle_id}, base_mode : {mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED}, custom_mode : {custom_mode}}}"
                 )
                 print(f"⚙️ MAVLink mode set for Vehicle #{vehicle_id}: ArduPilot {mode} ({custom_mode})")
 
@@ -1180,6 +1227,10 @@ class Gateway:
             vehicle_id, 1, mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0,
             0.0, 0.0, 0.0, 0.0, lat, lon, target_alt
         )
+        self._log_outgoing_mavlink_msg(
+            vehicle_id,
+            f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : {mavutil.mavlink.MAV_CMD_NAV_TAKEOFF}, confirmation : 0, param1 : 0.0, param2 : 0.0, param3 : 0.0, param4 : 0.0, param5 : {lat}, param6 : {lon}, param7 : {target_alt}}}"
+        )
         print(f"⚙️ MAVLink takeoff command sent to Vehicle #{vehicle_id} target_alt={target_alt} (rel={altitude}, home_msl={home_msl}) lat={lat} lon={lon}")
 
     def _handle_land(self, vehicle_id: int):
@@ -1189,6 +1240,10 @@ class Gateway:
         master.mav.command_long_send(
             vehicle_id, 1, mavutil.mavlink.MAV_CMD_NAV_LAND, 0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        )
+        self._log_outgoing_mavlink_msg(
+            vehicle_id,
+            f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : {mavutil.mavlink.MAV_CMD_NAV_LAND}, confirmation : 0, param1 : 0.0, param2 : 0.0, param3 : 0.0, param4 : 0.0, param5 : 0.0, param6 : 0.0, param7 : 0.0}}"
         )
         print(f"⚙️ MAVLink land command sent to Vehicle #{vehicle_id}")
 
@@ -1200,6 +1255,10 @@ class Gateway:
             vehicle_id, 1, mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH, 0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
         )
+        self._log_outgoing_mavlink_msg(
+            vehicle_id,
+            f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : {mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH}, confirmation : 0, param1 : 0.0, param2 : 0.0, param3 : 0.0, param4 : 0.0, param5 : 0.0, param6 : 0.0, param7 : 0.0}}"
+        )
         print(f"⚙️ MAVLink RTL command sent to Vehicle #{vehicle_id}")
 
     def _handle_pause(self, vehicle_id: int):
@@ -1209,6 +1268,10 @@ class Gateway:
         master.mav.command_long_send(
             vehicle_id, 1, mavutil.mavlink.MAV_CMD_DO_PAUSE, 0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        )
+        self._log_outgoing_mavlink_msg(
+            vehicle_id,
+            f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : {mavutil.mavlink.MAV_CMD_DO_PAUSE}, confirmation : 0, param1 : 0.0, param2 : 0.0, param3 : 0.0, param4 : 0.0, param5 : 0.0, param6 : 0.0, param7 : 0.0}}"
         )
         print(f"⚙️ MAVLink pause command sent to Vehicle #{vehicle_id}")
 
@@ -1243,6 +1306,10 @@ class Gateway:
             -1.0, 0.0, 0.0, float('nan'),
             int(float(lat) * 1e7), int(float(lon) * 1e7), target_alt
         )
+        self._log_outgoing_mavlink_msg(
+            vehicle_id,
+            f"COMMAND_INT {{target_system : {vehicle_id}, target_component : 1, frame : {mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT}, command : {mavutil.mavlink.MAV_CMD_DO_REPOSITION}, current : 0, autocontinue : 0, param1 : -1.0, param2 : 0.0, param3 : 0.0, param4 : nan, x : {int(float(lat) * 1e7)}, y : {int(float(lon) * 1e7)}, z : {target_alt}}}"
+        )
         print(f"⚙️ MAVLink reposition (Go To) sent to Vehicle #{vehicle_id}: lat={lat}, lon={lon}, target_alt={target_alt} (rel={alt}, home_msl={home_msl})")
 
     def _handle_orbit(self, vehicle_id: int, lat: float, lon: float, alt: float, radius: float):
@@ -1276,6 +1343,10 @@ class Gateway:
             float(radius), float('nan'), 0.0, 0.0,
             int(float(lat) * 1e7), int(float(lon) * 1e7), target_alt
         )
+        self._log_outgoing_mavlink_msg(
+            vehicle_id,
+            f"COMMAND_INT {{target_system : {vehicle_id}, target_component : 1, frame : {mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT}, command : {mavutil.mavlink.MAV_CMD_DO_ORBIT}, current : 0, autocontinue : 0, param1 : {radius}, param2 : nan, param3 : 0.0, param4 : 0.0, x : {int(float(lat) * 1e7)}, y : {int(float(lon) * 1e7)}, z : {target_alt}}}"
+        )
         print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, target_alt={target_alt} (rel={alt}, home_msl={home_msl}), radius={radius}")
 
     def _handle_change_speed(self, vehicle_id: int, speed: float):
@@ -1286,6 +1357,10 @@ class Gateway:
         master.mav.command_long_send(
             vehicle_id, 1, mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED, 0,
             1.0, float(speed), -1.0, 0.0, 0.0, 0.0, 0.0
+        )
+        self._log_outgoing_mavlink_msg(
+            vehicle_id,
+            f"COMMAND_LONG {{target_system : {vehicle_id}, target_component : 1, command : {mavutil.mavlink.MAV_CMD_DO_CHANGE_SPEED}, confirmation : 0, param1 : 1.0, param2 : {speed}, param3 : -1.0, param4 : 0.0, param5 : 0.0, param6 : 0.0, param7 : 0.0}}"
         )
         print(f"⚙️ MAVLink DO_CHANGE_SPEED command sent to Vehicle #{vehicle_id}: speed={speed} m/s")
 
