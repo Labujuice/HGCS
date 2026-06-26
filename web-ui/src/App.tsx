@@ -79,6 +79,8 @@ function App() {
   // ── Guided Action parameters ───────────────────────────────
   const [guidedAltitude, setGuidedAltitude] = useState(10);
   const [guidedRadius, setGuidedRadius] = useState(20);
+  const [guidedYawBehavior, setGuidedYawBehavior] = useState(0); // 0 = Face center
+  const [guidedVelocity, setGuidedVelocity] = useState(0); // 0 = Default
 
   // ── Active Flight controls ──────────────────────────────────
   const [activeTargetSpeed, setActiveTargetSpeed] = useState(10);
@@ -929,6 +931,8 @@ function App() {
       ...(action.data || {}),
       altitude: guidedAltitude,
       radius: guidedRadius,
+      yaw_behavior: guidedYawBehavior,
+      velocity: guidedVelocity,
     };
 
     if (isSimulating) {
@@ -974,7 +978,18 @@ function App() {
       rtl: { action: "rtl", data: { vehicle_id: vId } },
       pause: { action: "pause", data: { vehicle_id: vId } },
       go_to: { action: "go_to", data: { vehicle_id: vId, latitude: data.latitude, longitude: data.longitude, altitude: data.altitude || 10.0 } },
-      orbit: { action: "orbit", data: { vehicle_id: vId, latitude: data.latitude, longitude: data.longitude, altitude: data.altitude || 10.0, radius: data.radius || 20.0 } },
+      orbit: { 
+        action: "orbit", 
+        data: { 
+          vehicle_id: vId, 
+          latitude: data.latitude, 
+          longitude: data.longitude, 
+          altitude: data.altitude || 10.0, 
+          radius: data.radius || 20.0,
+          yaw_behavior: data.yaw_behavior,
+          velocity: data.velocity
+        } 
+      },
       change_speed: { action: "change_speed", data: { vehicle_id: vId, speed: data.speed } },
       set_mode: { action: "set_mode", data: { vehicle_id: vId, mode: data.mode } },
       nsh_command: { action: "nsh_command", data: { vehicle_id: vId, command: data.command } },
@@ -1969,14 +1984,32 @@ function App() {
 
             {/* Orbit / Loiter Radius & Altitude Sliders */}
             {sliderAction.type === "orbit" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%", marginBottom: 16, textAlign: "left" }}>
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "monospace" }}>Orbit Radius: {guidedRadius} m</span>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%", marginBottom: 16, textAlign: "left" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <span style={{ fontSize: 9, color: "var(--text-muted)", fontFamily: "monospace" }}>Orbit Radius: {guidedRadius} m</span>
                   <input type="range" min="5" max="100" step="1" value={guidedRadius} onChange={(e) => setGuidedRadius(Number(e.target.value))} style={{ width: "100%", accentColor: "var(--color-primary)" }} />
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "monospace" }}>Orbit Altitude: {guidedAltitude} m</span>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <span style={{ fontSize: 9, color: "var(--text-muted)", fontFamily: "monospace" }}>Orbit Altitude: {guidedAltitude} m</span>
                   <input type="range" min="2" max="100" step="1" value={guidedAltitude} onChange={(e) => setGuidedAltitude(Number(e.target.value))} style={{ width: "100%", accentColor: "var(--color-primary)" }} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <span style={{ fontSize: 9, color: "var(--text-muted)", fontFamily: "monospace" }}>绕行速度 (0=默认): {guidedVelocity === 0 ? "Default" : `${guidedVelocity} m/s`}</span>
+                  <input type="range" min="0" max="20" step="0.5" value={guidedVelocity} onChange={(e) => setGuidedVelocity(Number(e.target.value))} style={{ width: "100%", accentColor: "var(--color-primary)" }} />
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <span style={{ fontSize: 9, color: "var(--text-muted)", fontFamily: "monospace" }}>航向模式 (Yaw Behavior):</span>
+                  <select 
+                    value={guidedYawBehavior} 
+                    onChange={(e) => setGuidedYawBehavior(Number(e.target.value))} 
+                    className="form-select text-xxs py-1"
+                    style={{ background: "var(--bg-input)", color: "#fff", border: "1px solid var(--border-color)", borderRadius: 4 }}
+                  >
+                    <option value={0}>0: 指向中心 (Center)</option>
+                    <option value={1}>1: 沿切线前进 (Tangential)</option>
+                    <option value={2}>2: 保持当前航向 (Hold)</option>
+                    <option value={3}>3: 背对中心 (Away)</option>
+                  </select>
                 </div>
               </div>
             )}

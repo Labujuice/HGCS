@@ -886,7 +886,15 @@ class Gateway:
                 elif task_type == "go_to":
                     self._handle_go_to(vehicle_id, task.get("latitude"), task.get("longitude"), task.get("altitude"))
                 elif task_type == "orbit":
-                    self._handle_orbit(vehicle_id, task.get("latitude"), task.get("longitude"), task.get("altitude"), task.get("radius", 20.0))
+                    self._handle_orbit(
+                        vehicle_id, 
+                        task.get("latitude"), 
+                        task.get("longitude"), 
+                        task.get("altitude"), 
+                        task.get("radius", 20.0),
+                        task.get("yaw_behavior", 0),
+                        task.get("velocity", 0.0)
+                    )
                 elif task_type == "change_speed":
                     self._handle_change_speed(vehicle_id, task.get("speed", 10.0))
                     
@@ -1312,7 +1320,7 @@ class Gateway:
         )
         print(f"⚙️ MAVLink reposition (Go To) sent to Vehicle #{vehicle_id}: lat={lat}, lon={lon}, target_alt={target_alt} (rel={alt}, home_msl={home_msl})")
 
-    def _handle_orbit(self, vehicle_id: int, lat: float, lon: float, alt: float, radius: float):
+    def _handle_orbit(self, vehicle_id: int, lat: float, lon: float, alt: float, radius: float, yaw_behavior: int = 0, velocity: float = 0.0):
         master = self.vehicle_masters.get(vehicle_id)
         if not master:
             return
@@ -1334,20 +1342,25 @@ class Gateway:
         if msl_alt != 0.0:
             target_alt += home_msl
 
+        # Param 2 (Velocity) is passed as float. If 0.0, use float('nan') to trigger default speed.
+        param2_vel = float(velocity) if float(velocity) > 0.0 else float('nan')
+        # Param 3 (Yaw Behavior) is converted to float
+        param3_yaw = float(yaw_behavior)
+
         # Use command_int_send with MAV_FRAME_GLOBAL_RELATIVE_ALT to prevent coordinate error and negative notify
         master.mav.command_int_send(
             vehicle_id, 1,
             mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT,
-            mavutil.mavlink.MAV_CMD_DO_ORBIT,
+            34, # MAV_CMD_DO_ORBIT constant (34)
             0, 0,
-            float(radius), float('nan'), 0.0, 0.0,
+            float(radius), param2_vel, param3_yaw, 0.0,
             int(float(lat) * 1e7), int(float(lon) * 1e7), target_alt
         )
         self._log_outgoing_mavlink_msg(
             vehicle_id,
-            f"COMMAND_INT {{target_system : {vehicle_id}, target_component : 1, frame : {mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT}, command : {mavutil.mavlink.MAV_CMD_DO_ORBIT}, current : 0, autocontinue : 0, param1 : {radius}, param2 : nan, param3 : 0.0, param4 : 0.0, x : {int(float(lat) * 1e7)}, y : {int(float(lon) * 1e7)}, z : {target_alt}}}"
+            f"COMMAND_INT {{target_system : {vehicle_id}, target_component : 1, frame : {mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT}, command : 34, current : 0, autocontinue : 0, param1 : {radius}, param2 : {param2_vel}, param3 : {param3_yaw}, param4 : 0.0, x : {int(float(lat) * 1e7)}, y : {int(float(lon) * 1e7)}, z : {target_alt}}}"
         )
-        print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, target_alt={target_alt} (rel={alt}, home_msl={home_msl}), radius={radius}")
+        print(f"⚙️ MAVLink DO_ORBIT command sent to Vehicle #{vehicle_id}: center={lat},{lon}, target_alt={target_alt} (rel={alt}, home_msl={home_msl}), radius={radius}, velocity={velocity}, yaw_behavior={yaw_behavior}")
 
     def _handle_change_speed(self, vehicle_id: int, speed: float):
         master = self.vehicle_masters.get(vehicle_id)
@@ -1584,13 +1597,17 @@ class Gateway:
                         lon = data.get("longitude")
                         alt = data.get("altitude")
                         radius = data.get("radius", 20.0)
+                        yaw_behavior = data.get("yaw_behavior", 0)
+                        velocity = data.get("velocity", 0.0)
                         self.to_drone_queue.put({
                             "type": "orbit", 
                             "vehicle_id": vehicle_id, 
                             "latitude": lat, 
                             "longitude": lon, 
                             "altitude": alt,
-                            "radius": radius
+                            "radius": radius,
+                            "yaw_behavior": yaw_behavior,
+                            "velocity": velocity
                         })
                     elif action == "upload_mission":
                         waypoints = data.get("waypoints", [])
