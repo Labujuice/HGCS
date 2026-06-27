@@ -1,4 +1,5 @@
 # HGCS (HTML Ground Control Station) 🚀
+![](./materials/image.png)  
 
 [繁體中文](#中文說明) | [English](#english-description)
 
