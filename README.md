@@ -1,4 +1,5 @@
 # HGCS (HTML Ground Control Station) 🚀
+![](./materials/image.png)  
 
 [繁體中文](#中文說明) | [English](#english-description)
 
@@ -86,6 +87,7 @@ HGCS/
 ```bash
 cd web-ui
 npm install
+npm run build # 每次修改前端程式碼後均需執行以進行靜態打包編譯，Gateway 會自動託管並渲染 dist/ 目錄的內容
 ```
 
 #### 後端代理層
@@ -216,6 +218,7 @@ Requires **Node.js (≥ 20)** and **Python (≥ 3.10)**.
 ```bash
 cd web-ui
 npm install
+npm run build # Compile and bundle the React code into static assets. Gateway automatically hosts the compiled dist/ directory.
 ```
 
 #### Backend Gateway
